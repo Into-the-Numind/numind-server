@@ -20,6 +20,7 @@ import (
 	storepkg "numind-server/internal/numind/store"
 	"numind-server/internal/pkg/aiservice"
 	"numind-server/internal/pkg/aiservice/profile"
+	"numind-server/internal/pkg/compliance_scope"
 	"numind-server/internal/pkg/externalaction"
 	"numind-server/internal/pkg/model"
 )
@@ -42,6 +43,7 @@ type externalResumeStoreStub struct {
 	releaseCtxErr          error
 	candidates             []model.AgentRun
 	lists                  int
+	listSkipReason         string
 	touches                int
 	touchErrAfter          int
 }
@@ -830,10 +832,13 @@ func TestExternalContinuationGate_CompletingLeaseDoesNotCancelRemainingProviderS
 	assert.Equal(t, "stop", final.ResponseMeta.FinishReason)
 }
 
-func (s *externalResumeStoreStub) ListExternalToolResumeCandidates(context.Context, time.Time, int) ([]model.AgentRun, error) {
+func (s *externalResumeStoreStub) ListExternalToolResumeCandidates(ctx context.Context, _ time.Time, _ int) ([]model.AgentRun, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.lists++
+	if reason, ok := compliance_scope.SkipScopeFromCtx(ctx); ok {
+		s.listSkipReason = reason
+	}
 	return append([]model.AgentRun(nil), s.candidates...), nil
 }
 
@@ -1404,6 +1409,20 @@ func TestExternalResumeReclaimer_PeriodicallyScansAndStops(t *testing.T) {
 	resumeStore.mu.Lock()
 	assert.Equal(t, listsAtStop, resumeStore.lists, "Stop must terminate the ticker goroutine")
 	resumeStore.mu.Unlock()
+}
+
+func TestExternalResumeReclaimer_ScanMarksSystemScope(t *testing.T) {
+	runStore := newMockStore()
+	resumeStore := &externalResumeStoreStub{runStore: runStore}
+	resumer := newTestAgentRunResumer(t, resumeStore, NewStudentRunService(&externalResumeRunner{}, runStore, nil, nil, nil, nil))
+	reclaimer := NewExternalResumeReclaimer(resumeStore, resumer, time.Hour)
+
+	reclaimer.scan(context.Background())
+
+	resumeStore.mu.Lock()
+	defer resumeStore.mu.Unlock()
+	require.Equal(t, 1, resumeStore.lists)
+	assert.Equal(t, "external_resume_reclaimer", resumeStore.listSkipReason)
 }
 
 func TestExternalToolResume_InvalidHistoryDoesNotClaimDurableResult(t *testing.T) {

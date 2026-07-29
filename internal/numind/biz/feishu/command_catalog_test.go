@@ -78,6 +78,27 @@ func TestCommandCatalog_AllowedPathsAndExactContracts(t *testing.T) {
 	}
 }
 
+func TestSafeCommandValidationHint_GuidesInspectToolConfusionWithoutEchoingValues(t *testing.T) {
+	t.Parallel()
+
+	_, err := NewCommandCatalog().Normalize([]string{"drive", "+inspect", "--url", "https://example.feishu.cn/docx/SECRET"}, nil)
+	require.ErrorIs(t, err, ErrCommandDenied)
+	hint, ok := SafeCommandValidationHint([]string{"drive", "+inspect", "--url", "https://example.feishu.cn/docx/SECRET"}, err)
+	require.True(t, ok)
+	assert.Contains(t, hint, "lark_inspect")
+	assert.Contains(t, hint, "drive +inspect")
+	assert.NotContains(t, hint, "SECRET")
+	assert.NotContains(t, hint, "example.feishu.cn")
+
+	_, err = NewCommandCatalog().Normalize([]string{"base", "+base-create", "--name", "联调", "--table-name", "Tasks"}, nil)
+	require.ErrorIs(t, err, ErrCommandInvalidArgument)
+	hint, ok = SafeCommandValidationHint([]string{"base", "+base-create", "--name", "联调", "--table-name", "Tasks"}, err)
+	require.True(t, ok)
+	assert.Equal(t, "table-name and fields must be supplied together", hint)
+	assert.NotContains(t, hint, "联调")
+	assert.NotContains(t, hint, "Tasks")
+}
+
 // Customer regression (Dev run 246): the official lark-base skill requires
 // +url-resolve for a full Base URL, but the hosted catalog rejected it before
 // the local, read-only resolver could run.

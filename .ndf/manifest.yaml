@@ -1,5 +1,31 @@
 schema_version: '2.0'
 features:
+- id: feishu-stability-recovery
+  ndf_version: '3.0'
+  description: Improve Feishu Agent stability by reducing resume audit noise, tightening command-boundary recovery hints, preserving exact unknown-result fences, and expanding structured error classification coverage.
+  classification_reason: 'Standard: backend Agent/Feishu tool execution contract, compliance scanner behavior, and permission/safety boundary tests span more than three files and affect external workspace operations.'
+  last_updated_by: ai-s5-verified
+  last_updated_at: '2026-07-29T17:11:00+0800'
+  created_at: '2026-07-29T16:33:47+0800'
+  track: standard
+  stage: S5
+  status: active
+  repos: [numind-server]
+  branches: {numind-server: feature/feishu-stability-recovery}
+  worktrees: {numind-server: /private/tmp/wt-feishu-stability-recovery-numind-server}
+  progress: {total_tasks: 5, completed_tasks: 5, reviewed_tasks: 0, current_task: 'implementation and verification complete; ready for ndf-done/dev deploy'}
+  artifacts:
+    requirement: requirements/feishu-stability-recovery.md
+    proposal: proposals/feishu-stability-recovery-proposal.md
+    spec: docs/superpowers/specs/2026-07-29-feishu-stability-recovery-design.md
+    plan: docs/superpowers/plans/2026-07-29-feishu-stability-recovery.md
+    s5_verification: .ndf/decisions/feishu-stability-recovery/0001-s5-verification.md
+  decisions:
+  - 'S0: stale authorization cards are acceptable user-abandonment state; fixes target cross-scenario impact, resource use, and recovery clarity rather than blanket cleanup.'
+  - 'S1: keep unknown write replay blocked, but make reads, verification, and unrelated operations continue.'
+  - 'S2: avoid per-user prompt tuning; encode global recovery behavior in platform tools, command catalog feedback, and tests.'
+  - 'S5: go test ./internal/numind/biz/feishu, go test ./internal/numind/biz/agent, and task lint passed; task lint required GOPROXY=https://goproxy.cn,direct and PATH including ~/go/bin after proxy.golang.org timeout.'
+  blockers: []
 - id: remove-official-example-skill
   ndf_version: '3.0'
   description: Remove the seeded official example Skill so parent accounts no longer see the placeholder official card.

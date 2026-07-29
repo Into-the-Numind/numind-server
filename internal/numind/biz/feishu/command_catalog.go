@@ -60,6 +60,9 @@ var (
 	// ErrCommandInvalidArgument means an allowed command has malformed or
 	// unsafe arguments. It is distinct from a policy denial for user feedback.
 	ErrCommandInvalidArgument = errors.New("feishu command invalid argument")
+
+	safeCatalogDomainToken = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_-]*$`)
+	safeCatalogActionToken = regexp.MustCompile(`^\+[A-Za-z][A-Za-z0-9_-]*$`)
 )
 
 // RiskLevel is computed solely by the catalog, never accepted from the model.
@@ -1198,6 +1201,31 @@ func normalizeDriveSearchQuery(value string) (string, error) {
 	return normalized, nil
 }
 
+// SafeCommandValidationHint returns a bounded, credential-free correction hint
+// for catalog rejections. It never echoes argv values beyond the reviewed
+// two-token command path.
+func SafeCommandValidationHint(argv []string, err error) (string, bool) {
+	if err == nil {
+		return "", false
+	}
+	var hint string
+	if errors.Is(err, ErrCommandInvalidArgument) {
+		prefix := ErrCommandInvalidArgument.Error() + ": "
+		hint = strings.TrimPrefix(err.Error(), prefix)
+		if hint == "" || hint == err.Error() {
+			return "", false
+		}
+	} else if errors.Is(err, ErrCommandDenied) {
+		hint = safeDeniedCommandHint(argv, err)
+	} else {
+		return "", false
+	}
+	if hint == "" || len(hint) > 256 {
+		return "", false
+	}
+	return hint, true
+}
+
 func normalizeDriveSearchDocTypes(value string) (string, error) {
 	allowed := map[string]struct{}{"docx": {}, "wiki": {}, "bitable": {}}
 	parts := strings.Split(value, ",")
@@ -1581,6 +1609,32 @@ func decodeStrictObject(raw string, target any) error {
 		return errors.New("multiple JSON values")
 	}
 	return nil
+}
+
+func safeDeniedCommandHint(argv []string, err error) string {
+	path, hasPath := safeCatalogCommandPath(argv)
+	if hasPath && strings.HasSuffix(path, " +inspect") {
+		return "lark_inspect is a separate tool, not a lark_execute command; call lark_inspect instead of " + path + "."
+	}
+	if hasPath && (path == "auth status" || strings.HasPrefix(path, "auth ") || strings.HasPrefix(path, "config ") || strings.HasPrefix(path, "whoami ") || strings.HasPrefix(path, "qrcode ")) {
+		return "auth/config/whoami/qrcode are local setup commands; run the business command directly, or call lark_connect for explicit authorization."
+	}
+	const deniedPrefix = "feishu command denied: "
+	detail := strings.TrimPrefix(err.Error(), deniedPrefix)
+	if detail == "" || detail == err.Error() {
+		return ""
+	}
+	if detail == "command path is not registered" && hasPath {
+		return "command " + path + " is not in the hosted catalog; read the matching lark-* skill and use an exact listed Docs/Base/Wiki/Drive command."
+	}
+	return detail
+}
+
+func safeCatalogCommandPath(argv []string) (string, bool) {
+	if len(argv) < 2 || !safeCatalogDomainToken.MatchString(argv[0]) || !safeCatalogActionToken.MatchString(argv[1]) {
+		return "", false
+	}
+	return argv[0] + " " + argv[1], true
 }
 
 func invalidf(format string, args ...any) error {
