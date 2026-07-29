@@ -903,7 +903,10 @@ func TestAuthSessionService_RefreshLegacyUserAuthUsesAtomicDeviceReplacement(t *
 func TestAuthSessionService_RefreshConnectionOnlyReauthNoopEscalatesToCreateApp(t *testing.T) {
 	h := newAuthSessionHarness(t)
 	h.createAccount(model.FeishuConnectionWaitingUserAuth)
+	release := make(chan struct{})
+	releaseWorker := releaseAuthSessionCLIFake(t, release)
 	h.cli.urls = []string{"https://open.feishu.cn/page/cli?user_code=RECONNECT_CREATE_APP"}
+	h.cli.releases = []<-chan struct{}{release}
 	service := h.newService("refresh-connection-only-reauth-noop")
 	operation := &model.FeishuOperation{
 		ID: "operation-refresh-connection-noop", UserID: 7, Generation: 1,
@@ -963,6 +966,7 @@ func TestAuthSessionService_RefreshConnectionOnlyReauthNoopEscalatesToCreateApp(
 	require.Equal(t, action.SessionID, storedSummary.SessionID)
 	argv, _ := h.cli.snapshot()
 	require.Equal(t, []string{"config", "init", "--new"}, argv[0])
+	releaseWorker()
 }
 
 func TestAuthSessionService_RefreshMigratedSupersededUserAuthUsesDeviceReplacement(t *testing.T) {

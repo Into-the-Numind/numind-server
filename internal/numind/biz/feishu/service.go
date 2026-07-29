@@ -1115,7 +1115,12 @@ func (s *WorkspaceLifecycleService) RefreshAction(ctx context.Context, userID ui
 	if refreshErr != nil || action == nil || strings.TrimSpace(action.SessionID) == "" {
 		return nil, ErrWorkspaceLifecycleUnavailable
 	}
-	if err := s.handoffRefreshedOperationAction(ctx, userID, operation, action); err != nil {
+	refreshedOperation, operationErr := s.workspace.GetOperationForUser(ctx, userID, account.Generation, operation.ID)
+	if operationErr != nil || refreshedOperation == nil || refreshedOperation.UserID != userID ||
+		refreshedOperation.Generation != account.Generation {
+		return nil, ErrWorkspaceLifecycleUnavailable
+	}
+	if err := s.handoffRefreshedOperationAction(ctx, userID, refreshedOperation, action); err != nil {
 		return nil, err
 	}
 	return &RefreshActionResult{Action: cloneOperationAction(action)}, nil

@@ -2095,6 +2095,55 @@ func TestWorkspaceLifecycleRefreshHandsAgentCardToReplacementSession(t *testing.
 	require.Equal(t, [][]string{{oldSessionID}}, waits.handoffLineages)
 }
 
+func TestWorkspaceLifecycleRefreshHandsAgentCardAfterReauthNoopEscalation(t *testing.T) {
+	operationID := "op-refresh-reauth-noop-escalated"
+	oldSessionID := "session-reauth-noop-old"
+	newSessionID := "session-reauth-noop-new"
+	expiresAt := time.Now().Add(time.Hour).UTC()
+	op := &model.FeishuOperation{
+		ID: operationID, UserID: 7, Generation: 2, State: model.FeishuOperationWaitingUserAuth,
+		AgentRunID: 92, ToolCallID: "tool-reauth-noop-escalated",
+		ResultSummaryJSON: lifecycleRecoverySummary(t, model.FeishuOperationWaitingUserAuth, oldSessionID, model.FeishuAuthPhaseUserAuth, RecoveryReauth),
+	}
+	svc, _, workspace, auth, _, _, _ := newLifecycleService(t, &model.UserThirdPartyAccount{
+		UserID: 7, Provider: ProviderLark, Generation: 2,
+	}, op)
+	workspace.activeSession = &model.FeishuAuthSession{
+		ID: oldSessionID, UserID: 7, Generation: 2, OperationID: &operationID,
+		Phase: model.FeishuAuthPhaseUserAuth, State: model.FeishuAuthSessionPending,
+	}
+	auth.refreshOperation = func(_ context.Context, _ uint, _ uint64, sessionID, refreshedOperationID, waitingState string, _ []byte) (*OperationAction, error) {
+		require.Equal(t, oldSessionID, sessionID)
+		require.Equal(t, operationID, refreshedOperationID)
+		require.Equal(t, model.FeishuOperationWaitingUserAuth, waitingState)
+		updatedSummary, err := json.Marshal(persistedOperationSummary{
+			Status: model.FeishuOperationWaitingConnection, Phase: model.FeishuAuthPhaseCreateApp,
+			SessionID: newSessionID, RecoveryKind: RecoveryCreateApp,
+			SupersededSessionIDs: []string{oldSessionID},
+			ExpiresAt:            &expiresAt,
+		})
+		require.NoError(t, err)
+		workspace.operation.State = model.FeishuOperationWaitingConnection
+		workspace.operation.ResultSummaryJSON = updatedSummary
+		return &OperationAction{
+			Provider: ProviderLark, OperationID: operationID, SessionID: newSessionID,
+			Phase: model.FeishuAuthPhaseCreateApp, URL: "https://open.feishu.cn/page/cli?state=new", ExpiresAt: expiresAt,
+		}, nil
+	}
+
+	result, err := svc.RefreshAction(context.Background(), 7, oldSessionID)
+
+	require.NoError(t, err)
+	require.Equal(t, newSessionID, result.Action.SessionID)
+	require.Equal(t, model.FeishuAuthPhaseCreateApp, result.Action.Phase)
+	waits := svc.agentWaits.(*lifecycleAgentWaitFake)
+	require.Equal(t, []externalaction.Payload{{
+		Provider: ProviderLark, OperationID: operationID, SessionID: newSessionID,
+		ToolCallID: "tool-reauth-noop-escalated", Phase: model.FeishuAuthPhaseCreateApp, ExpiresAt: expiresAt,
+	}}, waits.handoffs)
+	require.Equal(t, [][]string{{oldSessionID}}, waits.handoffLineages)
+}
+
 func TestWorkspaceLifecycleRefreshRepairsLegacySupersededBinding(t *testing.T) {
 	operationID := "op-refresh-legacy"
 	oldSessionID := "session-legacy-superseded"
