@@ -135,8 +135,8 @@ func TestBaiduOCRAdapter_OCR_Roundtrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OCR: unexpected error: %v", err)
 	}
-	if resp.Provider != "baidu_ocr" {
-		t.Errorf("Provider = %q; want baidu_ocr", resp.Provider)
+	if resp.Provider != "baidu-ocr" {
+		t.Errorf("Provider = %q; want baidu-ocr", resp.Provider)
 	}
 	if !strings.Contains(resp.Text, "Hello") {
 		t.Errorf("Text = %q; want to contain 'Hello'", resp.Text)
