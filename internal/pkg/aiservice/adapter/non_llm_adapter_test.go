@@ -30,6 +30,14 @@ func mockRouteWithModel(serverURL, apiKey, modelID string) *registry.ResolvedRou
 // BaiduOCRAdapter tests
 // ----------------------------------------------------------------------------
 
+func TestBaiduOCRAdapter_NameMatchesProviderRegistry(t *testing.T) {
+	a := NewBaiduOCRAdapter()
+
+	if got, want := a.Name(), "baidu-ocr"; got != want {
+		t.Fatalf("Name() = %q; want %q to match ai_provider.name", got, want)
+	}
+}
+
 // writeBaiduTokenResponse writes a mock Baidu access_token response.
 func writeBaiduTokenResponse(w http.ResponseWriter, token string, expiresIn int64) {
 	w.Header().Set("Content-Type", "application/json")
