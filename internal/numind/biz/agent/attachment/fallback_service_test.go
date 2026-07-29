@@ -158,7 +158,7 @@ func TestGenerateLargeTextKeepsFullCanonicalContentAndBoundsLegacyFallback(t *te
 func TestComposeImageFallback_AllVariants(t *testing.T) {
 	w, h := 800, 600
 
-	t.Run("both_vlm_and_ocr", func(t *testing.T) {
+	t.Run("vlm_text_only", func(t *testing.T) {
 		out := att.ComposeImageFallbackExported(att.ImageTemplateDataExported{
 			Filename:          "test.png",
 			Width:             &w,
@@ -171,11 +171,11 @@ func TestComposeImageFallback_AllVariants(t *testing.T) {
 		assert.Contains(t, out, "800x600")
 		assert.Contains(t, out, "画面描述")
 		assert.Contains(t, out, "A chart showing growth")
-		assert.Contains(t, out, "OCR提取的文字")
-		assert.Contains(t, out, "Revenue Q1 Q2 Q3")
+		assert.NotContains(t, out, "OCR提取的文字")
+		assert.NotContains(t, out, "Revenue Q1 Q2 Q3")
 	})
 
-	t.Run("vlm_only_no_ocr", func(t *testing.T) {
+	t.Run("vlm_only", func(t *testing.T) {
 		out := att.ComposeImageFallbackExported(att.ImageTemplateDataExported{
 			Filename:          "test.png",
 			FilesizeKB:        50,
@@ -187,7 +187,7 @@ func TestComposeImageFallback_AllVariants(t *testing.T) {
 		assert.NotContains(t, out, "OCR提取的文字")
 	})
 
-	t.Run("ocr_only_no_vlm", func(t *testing.T) {
+	t.Run("ocr_only_no_vlm_is_unavailable", func(t *testing.T) {
 		out := att.ComposeImageFallbackExported(att.ImageTemplateDataExported{
 			Filename:          "test.png",
 			FilesizeKB:        50,
@@ -195,8 +195,9 @@ func TestComposeImageFallback_AllVariants(t *testing.T) {
 			OCRText:           "Hello World",
 		})
 		assert.NotContains(t, out, "画面描述")
-		assert.Contains(t, out, "OCR提取的文字")
-		assert.Contains(t, out, "Hello World")
+		assert.NotContains(t, out, "OCR提取的文字")
+		assert.NotContains(t, out, "Hello World")
+		assert.Contains(t, out, "文字描述不可用")
 	})
 
 	t.Run("neither_vlm_nor_ocr", func(t *testing.T) {
