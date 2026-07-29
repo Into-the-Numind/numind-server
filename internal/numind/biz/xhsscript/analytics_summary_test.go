@@ -165,6 +165,36 @@ func TestGetAnalyticsSummaryCountsCanonicalMVPEventNames(t *testing.T) {
 	assert.Contains(t, analyticsEventCountMap(summary.EventCounts), "order_created")
 }
 
+func TestDailyAnalyticsKeepsChinaEarlyMorningEventsOnTheSameCalendarDay(t *testing.T) {
+	db := newAnalyticsSummaryTestDB(t)
+	svc := New(store.NewTestStore(db))
+	ctx := context.Background()
+	chinaTime := time.FixedZone("UTC+8", 8*60*60)
+	createdAt := time.Date(2026, time.July, 30, 1, 30, 0, 0, chinaTime)
+
+	require.NoError(t, db.Create(&model.XhsScriptAnalyticsEvent{
+		EventID:   "evt_early_morning",
+		EventName: "script_page_view",
+		CreatedAt: createdAt,
+	}).Error)
+
+	date := createdAt.Format("2006-01-02")
+	row := AnalyticsDailyDTO{Date: date}
+	byDate := map[string]*AnalyticsDailyDTO{date: &row}
+
+	require.NoError(t, applyDailyEventCounts(
+		ctx,
+		svc,
+		time.Date(2026, time.July, 30, 0, 0, 0, 0, chinaTime),
+		byDate,
+		"script_page_view",
+		func(daily *AnalyticsDailyDTO, count int64) {
+			daily.PageViews = count
+		},
+	))
+	assert.EqualValues(t, 1, row.PageViews)
+}
+
 func TestTrackEventsDoesNotAcceptReservedBackendEventIDPrefix(t *testing.T) {
 	db := newAnalyticsSummaryTestDB(t)
 	svc := New(store.NewTestStore(db))

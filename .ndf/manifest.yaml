@@ -26,20 +26,23 @@ features:
   ndf_version: '3.0'
   description: Keep XHS Script daily analytics in the China calendar day during the 00:00-07:59 local window so deployment tests and daily product metrics do not report zeros.
   classification_reason: 'Hotfix: no DB schema, no new API, no external integration, two backend files, and no payment or permission logic.'
-  last_updated_by: ai-h1
-  last_updated_at: '2026-07-30T01:33:43+0800'
+  last_updated_by: ai-h3-start
+  last_updated_at: '2026-07-30T01:39:00+0800'
+  last_verified: '2026-07-30T01:38:21+0800'
   created_at: '2026-07-30T01:26:00+0800'
   track: hotfix
-  stage: H1
+  stage: H3
   status: active
   repos: [numind-server]
   branches: {numind-server: fix/xhs-analytics-summary-tests}
   worktrees: {numind-server: /private/tmp/wt-xhs-analytics-summary-tests-numind-server}
-  progress: {total_tasks: 3, completed_tasks: 2, reviewed_tasks: 0, current_task: 'Focused regression passes; full backend test and lint gate running'}
-  artifacts: {}
+  progress: {total_tasks: 3, completed_tasks: 3, reviewed_tasks: 0, current_task: 'H3 merging to develop and deploying Dev; human quick acceptance pending'}
+  artifacts:
+    h2_verification: .ndf/decisions/xhs-analytics-summary-tests/0001-h2-verification.md
   decisions:
   - 'RED commit 06e07950 deterministically reproduces China-local 01:30 being grouped into the previous SQLite UTC date.'
   - 'Keep production MySQL DATE(created_at) behavior unchanged; use an explicit UTC+8 SQLite bucket for deterministic local tests.'
+  - 'H2: go test ./... and task lint passed; no frontend, database, API, or LLM call-path changes.'
   blockers: []
 - id: feishu-write-command-guidance
   ndf_version: '3.0'
