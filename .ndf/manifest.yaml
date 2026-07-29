@@ -1,5 +1,31 @@
 schema_version: '2.0'
 features:
+- id: feishu-write-command-guidance
+  ndf_version: '3.0'
+  description: Raise Feishu correctable command attempts to ten and make Agent-authored Base write guidance internally consistent and safely observable without server-side payload conversion.
+  classification_reason: 'Standard: customer-reported Agent/Feishu write-contract defect spans tool schema, command safety policy, embedded guidance, pipeline prompt, diagnostics, and tests across more than three backend files.'
+  last_updated_by: ai-s3
+  last_updated_at: '2026-07-29T22:55:00+0800'
+  created_at: '2026-07-29T22:35:49+0800'
+  track: standard
+  stage: S3
+  status: active
+  repos: [numind-server]
+  branches: {numind-server: feature/feishu-write-command-guidance}
+  worktrees: {numind-server: /private/tmp/wt-feishu-write-command-guidance-numind-server}
+  progress: {total_tasks: 6, completed_tasks: 0, reviewed_tasks: 0, current_task: 'S3 implementation plan complete; inline execution selected'}
+  artifacts:
+    requirement: requirements/feishu-write-command-guidance.md
+    proposal: proposals/feishu-write-command-guidance-proposal.md
+    spec: docs/superpowers/specs/2026-07-29-feishu-write-command-guidance-design.md
+    plan: docs/superpowers/plans/2026-07-29-feishu-write-command-guidance.md
+  decisions:
+  - 'S0: implement user-approved items 1-6; explicitly exclude the proposed user-facing summary copy change.'
+  - 'S0: Agent remains responsible for authoring the complete inline --json payload; no server-side business payload conversion.'
+  - 'S1: choose complete contract repair over retry-only change; align tool schema, hosted guidance, exact references, safe diagnostics, and tests.'
+  - 'S2: preserve Agent-authored inline JSON, remove stdin_json from the model protocol, retain null-only rolling compatibility, and add safe exact-reference/command traces without model-carried receipts.'
+  - 'S3: six serial TDD tasks; first feature commit is the failing run-359 regression, with observability isolated as its own task.'
+  blockers: []
 - id: feishu-stability-recovery
   ndf_version: '3.0'
   description: Improve Feishu Agent stability by reducing resume audit noise, tightening command-boundary recovery hints, preserving exact unknown-result fences, and expanding structured error classification coverage.
