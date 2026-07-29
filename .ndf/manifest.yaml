@@ -4,20 +4,21 @@ features:
   ndf_version: '3.0'
   description: Run the Dev-proven Sandbox feature on the existing Prod host while isolating its Docker control plane, networks, secrets, mounts, and resource budget from customer-facing services and data.
   classification_reason: 'Standard: production host container-control security, a separate Sandbox runtime, build/deploy scripts, resource policy, and rollback verification span more than three files and are high risk.'
-  last_updated_by: ai-s2-design
-  last_updated_at: '2026-07-30T06:20:32+0800'
+  last_updated_by: ai-s3-plan
+  last_updated_at: '2026-07-30T06:42:00+0800'
   created_at: '2026-07-30T01:26:00+0800'
   track: standard
-  stage: S2
+  stage: S3
   status: active
   repos: [numind-server]
   branches: {numind-server: feature/prod-sandbox-isolation}
   worktrees: {numind-server: /private/tmp/wt-prod-sandbox-isolation-numind-server}
-  progress: {total_tasks: 0, completed_tasks: 0, reviewed_tasks: 0, current_task: 'S2 detailed design complete; awaiting product-owner confirmation before S3 implementation planning'}
+  progress: {total_tasks: 8, completed_tasks: 0, reviewed_tasks: 0, current_task: 'S3 implementation plan drafted; independent atomicity review pending'}
   artifacts:
     requirement: requirements/prod-sandbox-isolation.md
     proposal: proposals/prod-sandbox-isolation-proposal.md
     spec: docs/superpowers/specs/2026-07-30-prod-sandbox-isolation-design.md
+    plan: docs/superpowers/plans/prod-sandbox-isolation-plan.md
     office_hours_design: /Users/zhiyuchen/.gstack/projects/Into-the-Numind-numind-server/zhiyuchen-feature-prod-sandbox-isolation-design-20260730-023436.md
   decisions:
   - 'Use the existing Prod cloud server rather than adding a separate cloud server.'
@@ -30,8 +31,9 @@ features:
   - 'S1 human gate: product owner approved Approach A in chat, meaning the recommended constrained sandboxd + Rootless Docker proposal with active_task_max=5.'
   - 'S2: only the user API receives the constrained broker socket; admin uses a lightweight composition root and receives no Sandbox broker or Docker access.'
   - 'S2: preserve the existing Sandbox DockerClient product call paths via an HTTP-over-Unix broker client; broker owns the global five-slot lease journal, fixed container policy, pressure admission, bounded copies, and recovery.'
+  - 'S2 human gate: product owner confirmed the detailed design in chat on 2026-07-30 and authorized implementation to continue; this is not Prod deployment authorization.'
   blockers:
-  - 'S2 hard gate: detailed design is complete but must be confirmed by the product owner before implementation starts.'
+  - 'S3 gate: independent plan atomicity review must pass before S4 coding.'
 - id: xhs-analytics-summary-tests
   ndf_version: '3.0'
   description: Keep XHS Script daily analytics in the China calendar day during the 00:00-07:59 local window so deployment tests and daily product metrics do not report zeros.
