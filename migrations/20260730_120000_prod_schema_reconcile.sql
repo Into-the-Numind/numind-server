@@ -8,6 +8,15 @@ DROP PROCEDURE IF EXISTS `_prod_schema_reconcile_assert`;
 DELIMITER //
 CREATE PROCEDURE `_prod_schema_reconcile_assert`()
 BEGIN
+  DECLARE attachment_column_count INT DEFAULT 0;
+  DECLARE attachment_final_exact_count INT DEFAULT 0;
+  DECLARE attachment_legacy_exact_count INT DEFAULT 0;
+  DECLARE attachment_metadata_exact_count INT DEFAULT 0;
+  DECLARE attachment_column_names TEXT DEFAULT '';
+  DECLARE proof_table_count INT DEFAULT 0;
+  DECLARE proof_fk_count INT DEFAULT 0;
+  DECLARE proof_fk_contract TEXT DEFAULT '';
+
   IF (SELECT COUNT(*) FROM information_schema.TABLES
       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'user') <> 1 THEN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'prod reconcile: required user table missing';
@@ -23,6 +32,222 @@ BEGIN
   IF (SELECT COUNT(*) FROM information_schema.TABLES
       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'agent_run') <> 1 THEN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'prod reconcile: required agent_run table missing';
+  END IF;
+  SELECT
+    COUNT(*),
+    COALESCE(SUM(
+      CASE COLUMN_NAME
+        WHEN 'parsed_content' THEN COLUMN_TYPE = 'longtext' AND IS_NULLABLE = 'YES'
+        WHEN 'parsed_content_sha256' THEN
+          COLUMN_TYPE = 'varchar(71)' AND IS_NULLABLE = 'NO' AND COLUMN_DEFAULT = ''
+        WHEN 'parsed_content_byte_size' THEN
+          COLUMN_TYPE = 'bigint' AND IS_NULLABLE = 'NO' AND COLUMN_DEFAULT = '0'
+        WHEN 'parsed_page_count' THEN
+          COLUMN_TYPE = 'int' AND IS_NULLABLE = 'NO' AND COLUMN_DEFAULT = '0'
+        WHEN 'parsed_at' THEN COLUMN_TYPE = 'datetime(3)' AND IS_NULLABLE = 'YES'
+        ELSE FALSE
+      END
+    ), 0),
+    COALESCE(SUM(
+      CASE COLUMN_NAME
+        WHEN 'parsed_content' THEN COLUMN_TYPE = 'longtext' AND IS_NULLABLE = 'YES'
+        WHEN 'parsed_content_sha256' THEN
+          COLUMN_TYPE = 'varchar(71)' AND IS_NULLABLE = 'YES' AND COLUMN_DEFAULT IS NULL
+        WHEN 'parsed_content_byte_size' THEN
+          COLUMN_TYPE = 'bigint' AND IS_NULLABLE = 'YES' AND COLUMN_DEFAULT = '0'
+        WHEN 'parsed_page_count' THEN
+          COLUMN_TYPE = 'bigint' AND IS_NULLABLE = 'YES' AND COLUMN_DEFAULT = '0'
+        WHEN 'parsed_at' THEN COLUMN_TYPE = 'datetime(3)' AND IS_NULLABLE = 'YES'
+        ELSE FALSE
+      END
+    ), 0),
+    COALESCE(SUM(
+      CASE COLUMN_NAME
+        WHEN 'parsed_content' THEN
+          COLUMN_TYPE = 'longtext'
+          AND IS_NULLABLE = 'YES'
+          AND COLUMN_DEFAULT IS NULL
+          AND EXTRA = ''
+          AND CHARACTER_SET_NAME = 'utf8mb4'
+          AND COLLATION_NAME = 'utf8mb4_unicode_ci'
+        WHEN 'parsed_content_sha256' THEN
+          COLUMN_TYPE = 'varchar(71)'
+          AND (
+            (IS_NULLABLE = 'NO' AND COLUMN_DEFAULT = '')
+            OR (IS_NULLABLE = 'YES' AND COLUMN_DEFAULT IS NULL)
+          )
+          AND EXTRA = ''
+          AND CHARACTER_SET_NAME = 'utf8mb4'
+          AND COLLATION_NAME = 'utf8mb4_unicode_ci'
+        WHEN 'parsed_content_byte_size' THEN
+          COLUMN_TYPE = 'bigint'
+          AND COLUMN_DEFAULT = '0'
+          AND IS_NULLABLE IN ('YES', 'NO')
+          AND EXTRA = ''
+          AND CHARACTER_SET_NAME IS NULL
+          AND COLLATION_NAME IS NULL
+        WHEN 'parsed_page_count' THEN
+          COLUMN_TYPE IN ('int', 'bigint')
+          AND COLUMN_DEFAULT = '0'
+          AND (
+            (COLUMN_TYPE = 'int' AND IS_NULLABLE = 'NO')
+            OR (COLUMN_TYPE = 'bigint' AND IS_NULLABLE = 'YES')
+          )
+          AND EXTRA = ''
+          AND CHARACTER_SET_NAME IS NULL
+          AND COLLATION_NAME IS NULL
+        WHEN 'parsed_at' THEN
+          COLUMN_TYPE = 'datetime(3)'
+          AND IS_NULLABLE = 'YES'
+          AND COLUMN_DEFAULT IS NULL
+          AND EXTRA = ''
+          AND CHARACTER_SET_NAME IS NULL
+          AND COLLATION_NAME IS NULL
+        ELSE FALSE
+      END
+    ), 0),
+    COALESCE(GROUP_CONCAT(
+      COLUMN_NAME
+      ORDER BY FIELD(
+        COLUMN_NAME,
+        'parsed_content', 'parsed_content_sha256', 'parsed_content_byte_size',
+        'parsed_page_count', 'parsed_at'
+      )
+      SEPARATOR ','
+    ), '')
+  INTO
+    attachment_column_count,
+    attachment_final_exact_count,
+    attachment_legacy_exact_count,
+    attachment_metadata_exact_count,
+    attachment_column_names
+  FROM information_schema.COLUMNS
+  WHERE TABLE_SCHEMA = DATABASE()
+    AND TABLE_NAME = 'agent_attachment'
+    AND COLUMN_NAME IN (
+      'parsed_content', 'parsed_content_sha256', 'parsed_content_byte_size',
+      'parsed_page_count', 'parsed_at'
+    );
+  IF NOT (
+    attachment_column_count = 0
+    OR (
+      attachment_column_count BETWEEN 1 AND 5
+      AND attachment_metadata_exact_count = attachment_column_count
+      AND attachment_final_exact_count = attachment_column_count
+      AND attachment_column_names = SUBSTRING_INDEX(
+        'parsed_content,parsed_content_sha256,parsed_content_byte_size,parsed_page_count,parsed_at',
+        ',',
+        attachment_column_count
+      )
+    )
+    OR (
+      attachment_column_count = 5
+      AND attachment_metadata_exact_count = 5
+      AND attachment_legacy_exact_count = 5
+    )
+  ) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'prod reconcile: incompatible agent_attachment parsed column state';
+  END IF;
+  IF EXISTS (
+    SELECT 1
+    FROM `agent_run`
+    WHERE NOT (
+      `state_reason` IS NULL
+      OR (`state_reason` = '' AND `status` = 'running')
+      OR `state_reason` IN (
+        'completed', 'blocking_limit', 'image_error', 'model_error',
+        'aborted_streaming', 'prompt_too_long', 'stop_hook_prevented',
+        'aborted_tools', 'hook_stopped', 'max_turns', 'error_max_budget',
+        'error_max_retries', 'next_turn', 'collapse_drain_retry',
+        'reactive_compact_retry', 'max_output_escalate', 'max_output_recovery',
+        'stop_hook_blocking', 'token_budget_continue', 'running',
+        'waiting_for_user_choice', 'permission_denied', 'context_exhausted',
+        'cancelled', 'external_resume_ready'
+      )
+      OR (`state_reason` = 'zombie_cleanup_2026_05_28' AND `is_deleted` = 1)
+      OR LEFT(`state_reason`, 11) = 'ext_resume:'
+    )
+  ) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'prod reconcile: unsupported agent_run state_reason relationship';
+  END IF;
+  SELECT COUNT(*)
+  INTO proof_table_count
+  FROM information_schema.TABLES
+  WHERE TABLE_SCHEMA = DATABASE()
+    AND TABLE_NAME = CONCAT('feishu_', 'operation_proof_consumption');
+  IF proof_table_count = 1 THEN
+    SELECT
+      COUNT(*),
+      COALESCE(
+        GROUP_CONCAT(
+          CONCAT_WS(
+            '|', constraints_meta.CONSTRAINT_NAME, key_meta.COLUMN_NAME,
+            key_meta.REFERENCED_TABLE_NAME, key_meta.REFERENCED_COLUMN_NAME,
+            ref_meta.DELETE_RULE, ref_meta.UPDATE_RULE
+          )
+          ORDER BY constraints_meta.CONSTRAINT_NAME SEPARATOR '\n'
+        ),
+        ''
+      )
+    INTO proof_fk_count, proof_fk_contract
+    FROM information_schema.TABLE_CONSTRAINTS constraints_meta
+    JOIN information_schema.KEY_COLUMN_USAGE key_meta
+      ON key_meta.CONSTRAINT_SCHEMA = constraints_meta.CONSTRAINT_SCHEMA
+     AND key_meta.TABLE_NAME = constraints_meta.TABLE_NAME
+     AND key_meta.CONSTRAINT_NAME = constraints_meta.CONSTRAINT_NAME
+    JOIN information_schema.REFERENTIAL_CONSTRAINTS ref_meta
+      ON ref_meta.CONSTRAINT_SCHEMA = constraints_meta.CONSTRAINT_SCHEMA
+     AND ref_meta.CONSTRAINT_NAME = constraints_meta.CONSTRAINT_NAME
+    WHERE constraints_meta.CONSTRAINT_SCHEMA = DATABASE()
+      AND constraints_meta.TABLE_NAME = CONCAT('feishu_', 'operation_proof_consumption')
+      AND constraints_meta.CONSTRAINT_TYPE = 'FOREIGN KEY';
+    IF NOT (
+      proof_fk_count = 0
+      OR (
+        proof_fk_count = 2
+        AND proof_fk_contract = CONCAT(
+          'fk_feishu_proof_consumer_operation|consumer_operation_id|feishu_operation|id|RESTRICT|NO ACTION',
+          '\n',
+          'fk_feishu_proof_source_operation|source_operation_id|feishu_operation|id|RESTRICT|NO ACTION'
+        )
+      )
+    ) THEN
+      SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'prod reconcile: proof FK state must be zero or exact pair';
+    END IF;
+    IF (
+      SELECT COUNT(*)
+      FROM information_schema.COLUMNS proof_column
+      JOIN information_schema.COLUMNS operation_column
+        ON operation_column.TABLE_SCHEMA = proof_column.TABLE_SCHEMA
+       AND operation_column.TABLE_NAME = 'feishu_operation'
+       AND operation_column.COLUMN_NAME = 'id'
+      WHERE proof_column.TABLE_SCHEMA = DATABASE()
+        AND proof_column.TABLE_NAME = CONCAT('feishu_', 'operation_proof_consumption')
+        AND proof_column.COLUMN_NAME IN ('source_operation_id', 'consumer_operation_id')
+        AND proof_column.COLUMN_TYPE = operation_column.COLUMN_TYPE
+        AND proof_column.CHARACTER_SET_NAME <=> operation_column.CHARACTER_SET_NAME
+        AND proof_column.COLLATION_NAME <=> operation_column.COLLATION_NAME
+    ) <> 2 THEN
+      SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'prod reconcile: proof operation ID columns are incompatible';
+    END IF;
+    IF EXISTS (
+      SELECT 1
+      FROM `feishu_operation_proof_consumption` proof
+      LEFT JOIN `feishu_operation` operation_row
+        ON operation_row.`id` = proof.`source_operation_id`
+      WHERE operation_row.`id` IS NULL
+    ) THEN
+      SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'prod reconcile: orphan proof source operation';
+    END IF;
+    IF EXISTS (
+      SELECT 1
+      FROM `feishu_operation_proof_consumption` proof
+      LEFT JOIN `feishu_operation` operation_row
+        ON operation_row.`id` = proof.`consumer_operation_id`
+      WHERE operation_row.`id` IS NULL
+    ) THEN
+      SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'prod reconcile: orphan proof consumer operation';
+    END IF;
   END IF;
   IF (SELECT COUNT(*) FROM `llm_provider` WHERE `name` = 'ali-dashscope') <> 1 THEN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'prod reconcile: ali-dashscope provider must exist exactly once';
@@ -256,6 +481,31 @@ CREATE TABLE IF NOT EXISTS `feishu_operation_execution_gate` (
   KEY `idx_feishu_execution_gate_lease` (`lease_until`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci ROW_FORMAT=DYNAMIC;
 
+-- Dev historically created the proof table before its two operation FKs were
+-- added. The opening assertion permits only zero or the exact final pair, so a
+-- single ALTER can repair the zero-FK state atomically without touching rows.
+DROP PROCEDURE IF EXISTS `_prod_schema_reconcile_proof_fk`;
+DELIMITER //
+CREATE PROCEDURE `_prod_schema_reconcile_proof_fk`()
+BEGIN
+  IF (
+    SELECT COUNT(*)
+    FROM information_schema.TABLE_CONSTRAINTS
+    WHERE CONSTRAINT_SCHEMA = DATABASE()
+      AND TABLE_NAME = CONCAT('feishu_', 'operation_proof_consumption')
+      AND CONSTRAINT_TYPE = 'FOREIGN KEY'
+  ) = 0 THEN
+    ALTER TABLE `feishu_operation_proof_consumption`
+      ADD CONSTRAINT `fk_feishu_proof_source_operation`
+        FOREIGN KEY (`source_operation_id`) REFERENCES `feishu_operation` (`id`) ON DELETE RESTRICT,
+      ADD CONSTRAINT `fk_feishu_proof_consumer_operation`
+        FOREIGN KEY (`consumer_operation_id`) REFERENCES `feishu_operation` (`id`) ON DELETE RESTRICT;
+  END IF;
+END//
+DELIMITER ;
+CALL `_prod_schema_reconcile_proof_fk`();
+DROP PROCEDURE IF EXISTS `_prod_schema_reconcile_proof_fk`;
+
 -- --------------------------------------------------------------------------
 -- Existing-table additive columns and indexes.
 -- --------------------------------------------------------------------------
@@ -380,8 +630,10 @@ BEGIN
   IF EXISTS (
     SELECT 1
     FROM `agent_run`
-    WHERE `state_reason` IS NOT NULL
-      AND `state_reason` NOT IN (
+    WHERE NOT (
+      `state_reason` IS NULL
+      OR (`state_reason` = '' AND `status` = 'running')
+      OR `state_reason` IN (
         'completed', 'blocking_limit', 'image_error', 'model_error',
         'aborted_streaming', 'prompt_too_long', 'stop_hook_prevented',
         'aborted_tools', 'hook_stopped', 'max_turns', 'error_max_budget',
@@ -391,7 +643,9 @@ BEGIN
         'waiting_for_user_choice', 'permission_denied', 'context_exhausted',
         'cancelled', 'external_resume_ready'
       )
-      AND LEFT(`state_reason`, 11) <> 'ext_resume:'
+      OR (`state_reason` = 'zombie_cleanup_2026_05_28' AND `is_deleted` = 1)
+      OR LEFT(`state_reason`, 11) = 'ext_resume:'
+    )
   ) THEN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'prod reconcile: unsupported agent_run state_reason';
   END IF;
@@ -422,7 +676,7 @@ BEGIN
           )
         ),
         256
-      ) <> '3ff1b9272063ecd57935884d4f47def2795f105385cf2d789e55ed7da1aad535'
+      ) <> '7bac0f04b3cf2225cdd40a61fe086c4d1ed982bb3b082e96341818040878d100'
   ) THEN
     ALTER TABLE `agent_run` DROP CHECK `chk_ar_state_reason`;
   END IF;
@@ -437,6 +691,7 @@ BEGIN
     ALTER TABLE `agent_run`
       ADD CONSTRAINT `chk_ar_state_reason` CHECK (
         `state_reason` IS NULL OR
+        (`state_reason` = '' AND `status` = 'running') OR
         `state_reason` IN (
           'completed', 'blocking_limit', 'image_error', 'model_error',
           'aborted_streaming', 'prompt_too_long', 'stop_hook_prevented',
@@ -446,7 +701,9 @@ BEGIN
           'stop_hook_blocking', 'token_budget_continue', 'running',
           'waiting_for_user_choice', 'permission_denied', 'context_exhausted',
           'cancelled', 'external_resume_ready'
-        ) OR LEFT(`state_reason`, 11) = 'ext_resume:'
+        ) OR
+        (`state_reason` = 'zombie_cleanup_2026_05_28' AND `is_deleted` = 1) OR
+        LEFT(`state_reason`, 11) = 'ext_resume:'
       );
   END IF;
 END//

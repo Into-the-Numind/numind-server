@@ -23,7 +23,7 @@ Dev 数据，也不替换 Prod 用户、积分、订阅、SOP、聊天或智能�
 - 升级后核对：`scripts/2026-07-30-prod-schema-reconcile/02-verify.sql`
 - 隔离演练：`scripts/2026-07-30-prod-schema-reconcile/test-mysql8.sh`
 - 当前升级 SQL SHA256：
-  `44e4a6e3afd969f408cccd1997f9997272e2347c15c209581006954a2758aa58`
+  `f0622bde1f472e4e489c002507928cee86c79fff22cf89ee96d57ee44079669f`
 
 上线使用的 Git tag、SQL 文件和上述 SHA256 必须完全对应。SQL 有任何修改，
 必须重新评审、重跑全部测试并更新这里的 SHA256。
@@ -95,7 +95,11 @@ PASS: MySQL 8 exact, partial, negative-preflight, double-apply, constraints, and
 同时保存脚本输出的：
 
 - `agent_attachment_protected_projection`：只计算附件原字段，不包含本次新字段；
+- `agent_attachment_complete_projection`：计算附件全部业务字段；缺失的新字段按
+  新增字段将采用的默认值计算，因此升级前后必须完全一致；
 - `agent_run_protected_projection`：只计算智能体运行原字段，不包含本次新字段；
+- `feishu_proof_business_projection`：计算飞书操作凭证的全部业务字段，补外键前后
+  必须完全一致；
 - 用户、试用积分、订阅周期积分、加量包余额、会员事件、积分预扣/流水、
   SOP、聊天、销售历史表的 `CHECKSUM TABLE ... EXTENDED`；
 - 每张核心业务表行数。
@@ -117,6 +121,16 @@ PASS: MySQL 8 exact, partial, negative-preflight, double-apply, constraints, and
 ### 6. 部署 Dev 后端并做产品验收
 
 先部署用户 API，再部署管理 API。只使用与评审 commit 对应的镜像。
+
+在部署前，单独保存第二次 verify 输出中的
+`agent_attachment_complete_projection` 和
+`feishu_proof_business_projection`。等用户 API、管理 API 都完成一次完整启动并
+通过健康检查后，立即再次执行 `02-verify.sql`：
+
+- 所有检查仍必须为 `PASS`；
+- 两个完整业务投影的行数和 SHA256 必须与部署前完全相同；
+- 如果任一投影变化，视为服务启动过程中发生了隐形数据库写入，停止后续验收，
+  回滚后端镜像并调查，不进入 Prod。
 
 产品验收至少包括：
 

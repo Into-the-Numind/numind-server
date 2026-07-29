@@ -223,7 +223,7 @@ func TestProdSchemaReconcilePreflightCoversFailClosedContracts(t *testing.T) {
 	))
 	for _, required := range []string{
 		"_schema_contract",
-		"a33468f2c8055a11a306b7d90fcc3cc44c94f60d9ec08ee2bdbfb2378f8c37ef",
+		"ac58e234470d95c46cbefe91cb49a4ea7cdcac1c9391242884638839cadbf112",
 		"feishu_proof_fk_contract",
 		"duplicate_announcement_read_user_pair",
 		"duplicate_survey_response_user_pair",
@@ -239,6 +239,70 @@ func TestProdSchemaReconcilePreflightCoversFailClosedContracts(t *testing.T) {
 	} {
 		if !strings.Contains(sql, required) {
 			t.Errorf("preflight missing fail-closed contract %q", required)
+		}
+	}
+}
+
+func TestProdSchemaReconcileCoversDevHistoricalCompatibilityContracts(t *testing.T) {
+	preflight := strings.ToLower(readRequiredRolloutFile(
+		t,
+		filepath.Join(prodSchemaReconcileDir, "00-preflight.sql"),
+	))
+	verify := strings.ToLower(readRequiredRolloutFile(
+		t,
+		filepath.Join(prodSchemaReconcileDir, "02-verify.sql"),
+	))
+	migration := strings.ToLower(readRequiredRolloutFile(t, prodSchemaReconcileMigration))
+
+	for _, required := range []string{
+		"agent_attachment_complete_projection",
+		"attachment_parsed_column_metadata",
+		"feishu_proof_business_projection",
+		"character_set_name",
+		"collation_name",
+		"is_visible",
+		"expression",
+		"legacy_complete",
+		"octet_length",
+		"zombie_cleanup_2026_05_28",
+	} {
+		if !strings.Contains(preflight, required) {
+			t.Errorf("preflight missing Dev compatibility contract %q", required)
+		}
+		if !strings.Contains(verify, required) {
+			t.Errorf("verify missing Dev compatibility contract %q", required)
+		}
+	}
+
+	for _, required := range []string{
+		"attachment_metadata_exact_count",
+		"character_set_name",
+		"collation_name",
+		"extra",
+		"zombie_cleanup_2026_05_28",
+		"status` = 'running'",
+		"is_deleted` = 1",
+		"_prod_schema_reconcile_proof_fk",
+		"alter table `feishu_operation_proof_consumption`",
+	} {
+		if !strings.Contains(migration, required) {
+			t.Errorf("migration missing Dev compatibility repair %q", required)
+		}
+	}
+}
+
+func TestAgentAttachmentMySQLIntegrationRequiresDedicatedDatabase(t *testing.T) {
+	integrationTest := readRequiredRolloutFile(
+		t,
+		"../internal/numind/store/agent_attachment_mysql_integration_test.go",
+	)
+	for _, required := range []string{
+		"numind_attachment_integration_",
+		"refusing destructive integration setup outside a dedicated",
+		"dedicated integration database must start empty",
+	} {
+		if !strings.Contains(integrationTest, required) {
+			t.Errorf("attachment MySQL integration safety gate missing %q", required)
 		}
 	}
 }

@@ -383,12 +383,11 @@ func autoMigrate(db *gorm.DB) error {
 		return fmt.Errorf("failed to migrate agent_tool_artifact: %v", err)
 	}
 
-	// Agent attachment 上传记录表（V1.5 multimodal fallback task 1.2）
-	// Migration 20260523_120000_agent_attachment_fallback.sql handles the initial
-	// CREATE TABLE with proper indexes. AutoMigrate here adds any new columns that
-	// appear in future model changes.
-	if err := db.AutoMigrate(&model.AgentAttachment{}); err != nil {
-		return fmt.Errorf("failed to migrate agent_attachment: %v", err)
+	// Agent attachment 上传记录表（V1.5 multimodal fallback task 1.2）。
+	// 生产结构只能由经过审查的显式 migration 管理；启动时只确认表存在，
+	// 避免 GORM 在服务启动过程中静默改动历史列定义。
+	if !db.Migrator().HasTable(&model.AgentAttachment{}) {
+		return fmt.Errorf("agent_attachment table is missing; run the reviewed explicit migration before starting the service")
 	}
 
 	// Notification Center 5 表（notification-center T1）

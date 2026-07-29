@@ -44,7 +44,39 @@ SELECT
   'attachment_parsed_column_shapes',
   IF(
     COUNT(*) = 5
-      AND COALESCE(SUM(
+      AND (
+        COALESCE(SUM(
+          CASE COLUMN_NAME
+            WHEN 'parsed_content' THEN COLUMN_TYPE = 'longtext' AND IS_NULLABLE = 'YES'
+            WHEN 'parsed_content_sha256' THEN
+              COLUMN_TYPE = 'varchar(71)' AND IS_NULLABLE = 'NO' AND COLUMN_DEFAULT = ''
+            WHEN 'parsed_content_byte_size' THEN
+              COLUMN_TYPE = 'bigint' AND IS_NULLABLE = 'NO' AND COLUMN_DEFAULT = '0'
+            WHEN 'parsed_page_count' THEN
+              COLUMN_TYPE = 'int' AND IS_NULLABLE = 'NO' AND COLUMN_DEFAULT = '0'
+            WHEN 'parsed_at' THEN COLUMN_TYPE = 'datetime(3)' AND IS_NULLABLE = 'YES'
+            ELSE FALSE
+          END
+        ), 0) = 5
+        OR COALESCE(SUM(
+          CASE COLUMN_NAME
+            WHEN 'parsed_content' THEN COLUMN_TYPE = 'longtext' AND IS_NULLABLE = 'YES'
+            WHEN 'parsed_content_sha256' THEN
+              COLUMN_TYPE = 'varchar(71)' AND IS_NULLABLE = 'YES' AND COLUMN_DEFAULT IS NULL
+            WHEN 'parsed_content_byte_size' THEN
+              COLUMN_TYPE = 'bigint' AND IS_NULLABLE = 'YES' AND COLUMN_DEFAULT = '0'
+            WHEN 'parsed_page_count' THEN
+              COLUMN_TYPE = 'bigint' AND IS_NULLABLE = 'YES' AND COLUMN_DEFAULT = '0'
+            WHEN 'parsed_at' THEN COLUMN_TYPE = 'datetime(3)' AND IS_NULLABLE = 'YES'
+            ELSE FALSE
+          END
+        ), 0) = 5
+      ),
+    'PASS',
+    'FAIL'
+  ),
+  CASE
+    WHEN COUNT(*) = 5 AND COALESCE(SUM(
         CASE COLUMN_NAME
           WHEN 'parsed_content' THEN COLUMN_TYPE = 'longtext' AND IS_NULLABLE = 'YES'
           WHEN 'parsed_content_sha256' THEN
@@ -56,24 +88,23 @@ SELECT
           WHEN 'parsed_at' THEN COLUMN_TYPE = 'datetime(3)' AND IS_NULLABLE = 'YES'
           ELSE FALSE
         END
-      ), 0) = 5,
-    'PASS',
-    'FAIL'
-  ),
-  CONCAT('present=', COUNT(*), ',exact=', COALESCE(SUM(
-    CASE COLUMN_NAME
-      WHEN 'parsed_content' THEN COLUMN_TYPE = 'longtext' AND IS_NULLABLE = 'YES'
-      WHEN 'parsed_content_sha256' THEN
-        COLUMN_TYPE = 'varchar(71)' AND IS_NULLABLE = 'NO' AND COLUMN_DEFAULT = ''
-      WHEN 'parsed_content_byte_size' THEN
-        COLUMN_TYPE = 'bigint' AND IS_NULLABLE = 'NO' AND COLUMN_DEFAULT = '0'
-      WHEN 'parsed_page_count' THEN
-        COLUMN_TYPE = 'int' AND IS_NULLABLE = 'NO' AND COLUMN_DEFAULT = '0'
-      WHEN 'parsed_at' THEN COLUMN_TYPE = 'datetime(3)' AND IS_NULLABLE = 'YES'
-      ELSE FALSE
-    END
-  ), 0)),
-  'five exact parsed-content columns'
+      ), 0) = 5 THEN 'final_complete'
+    WHEN COUNT(*) = 5 AND COALESCE(SUM(
+      CASE COLUMN_NAME
+        WHEN 'parsed_content' THEN COLUMN_TYPE = 'longtext' AND IS_NULLABLE = 'YES'
+        WHEN 'parsed_content_sha256' THEN
+          COLUMN_TYPE = 'varchar(71)' AND IS_NULLABLE = 'YES' AND COLUMN_DEFAULT IS NULL
+        WHEN 'parsed_content_byte_size' THEN
+          COLUMN_TYPE = 'bigint' AND IS_NULLABLE = 'YES' AND COLUMN_DEFAULT = '0'
+        WHEN 'parsed_page_count' THEN
+          COLUMN_TYPE = 'bigint' AND IS_NULLABLE = 'YES' AND COLUMN_DEFAULT = '0'
+        WHEN 'parsed_at' THEN COLUMN_TYPE = 'datetime(3)' AND IS_NULLABLE = 'YES'
+        ELSE FALSE
+      END
+    ), 0) = 5 THEN 'legacy_complete'
+    ELSE 'incompatible'
+  END,
+  'final_complete or legacy_complete'
 FROM information_schema.COLUMNS
 WHERE TABLE_SCHEMA = DATABASE()
   AND TABLE_NAME = 'agent_attachment'
@@ -85,17 +116,83 @@ UNION ALL
 SELECT
   'attachment_page_count_shape',
   IF(
-    COUNT(*) = 1 AND MAX(COLUMN_TYPE) = 'int'
-      AND MAX(IS_NULLABLE) = 'NO' AND MAX(COLUMN_DEFAULT) = '0',
+    COUNT(*) = 1
+      AND MAX(COLUMN_DEFAULT) = '0'
+      AND (
+        (MAX(COLUMN_TYPE) = 'int' AND MAX(IS_NULLABLE) = 'NO')
+        OR (MAX(COLUMN_TYPE) = 'bigint' AND MAX(IS_NULLABLE) = 'YES')
+      ),
     'PASS',
     'FAIL'
   ),
   CONCAT_WS('/', COUNT(*), MAX(COLUMN_TYPE), MAX(IS_NULLABLE), MAX(COLUMN_DEFAULT)),
-  '1/int/NO/0'
+  '1/int/NO/0 or 1/bigint/YES/0'
 FROM information_schema.COLUMNS
 WHERE TABLE_SCHEMA = DATABASE()
   AND TABLE_NAME = 'agent_attachment'
   AND COLUMN_NAME = 'parsed_page_count'
+UNION ALL
+SELECT
+  'attachment_parsed_column_metadata',
+  IF(
+    COUNT(*) = 5
+      AND COUNT(*) = COALESCE(SUM(
+        CASE COLUMN_NAME
+          WHEN 'parsed_content' THEN
+            COLUMN_TYPE = 'longtext'
+            AND IS_NULLABLE = 'YES'
+            AND COLUMN_DEFAULT IS NULL
+            AND EXTRA = ''
+            AND CHARACTER_SET_NAME = 'utf8mb4'
+            AND COLLATION_NAME = 'utf8mb4_unicode_ci'
+          WHEN 'parsed_content_sha256' THEN
+            COLUMN_TYPE = 'varchar(71)'
+            AND (
+              (IS_NULLABLE = 'NO' AND COLUMN_DEFAULT = '')
+              OR (IS_NULLABLE = 'YES' AND COLUMN_DEFAULT IS NULL)
+            )
+            AND EXTRA = ''
+            AND CHARACTER_SET_NAME = 'utf8mb4'
+            AND COLLATION_NAME = 'utf8mb4_unicode_ci'
+          WHEN 'parsed_content_byte_size' THEN
+            COLUMN_TYPE = 'bigint'
+            AND COLUMN_DEFAULT = '0'
+            AND IS_NULLABLE IN ('YES', 'NO')
+            AND EXTRA = ''
+            AND CHARACTER_SET_NAME IS NULL
+            AND COLLATION_NAME IS NULL
+          WHEN 'parsed_page_count' THEN
+            COLUMN_TYPE IN ('int', 'bigint')
+            AND COLUMN_DEFAULT = '0'
+            AND (
+              (COLUMN_TYPE = 'int' AND IS_NULLABLE = 'NO')
+              OR (COLUMN_TYPE = 'bigint' AND IS_NULLABLE = 'YES')
+            )
+            AND EXTRA = ''
+            AND CHARACTER_SET_NAME IS NULL
+            AND COLLATION_NAME IS NULL
+          WHEN 'parsed_at' THEN
+            COLUMN_TYPE = 'datetime(3)'
+            AND IS_NULLABLE = 'YES'
+            AND COLUMN_DEFAULT IS NULL
+            AND EXTRA = ''
+            AND CHARACTER_SET_NAME IS NULL
+            AND COLLATION_NAME IS NULL
+          ELSE FALSE
+        END
+      ), 0),
+    'PASS',
+    'FAIL'
+  ),
+  CONCAT('present=', COUNT(*)),
+  'five complete final-or-legacy metadata rows'
+FROM information_schema.COLUMNS
+WHERE TABLE_SCHEMA = DATABASE()
+  AND TABLE_NAME = 'agent_attachment'
+  AND COLUMN_NAME IN (
+    'parsed_content', 'parsed_content_sha256', 'parsed_content_byte_size',
+    'parsed_page_count', 'parsed_at'
+  )
 UNION ALL
 SELECT
   'document_table_required_columns',
@@ -173,10 +270,10 @@ WHERE TABLE_SCHEMA = DATABASE()
   )
 UNION ALL
 SELECT
-  'new_product_tables_initially_empty',
-  IF(SUM(row_count) = 0, 'PASS', 'FAIL'),
+  'new_product_tables_existing_row_count',
+  'PASS',
   CAST(SUM(row_count) AS CHAR),
-  '0 before customer traffic'
+  'informational; existing rows are preserved'
 FROM (
   SELECT COUNT(*) AS row_count FROM document
   UNION ALL SELECT COUNT(*) FROM user_third_party_account
@@ -238,6 +335,29 @@ WHERE TABLE_SCHEMA = DATABASE()
   AND INDEX_NAME = 'idx_ar_state_pending'
 UNION ALL
 SELECT
+  'agent_state_reason_rows',
+  IF(COUNT(*) = 0, 'PASS', 'FAIL'),
+  CAST(COUNT(*) AS CHAR),
+  '0 unsupported state_reason relationships'
+FROM agent_run
+WHERE NOT (
+  state_reason IS NULL
+  OR (state_reason = '' AND status = 'running')
+  OR state_reason IN (
+      'completed', 'blocking_limit', 'image_error', 'model_error',
+      'aborted_streaming', 'prompt_too_long', 'stop_hook_prevented',
+      'aborted_tools', 'hook_stopped', 'max_turns', 'error_max_budget',
+      'error_max_retries', 'next_turn', 'collapse_drain_retry',
+      'reactive_compact_retry', 'max_output_escalate', 'max_output_recovery',
+      'stop_hook_blocking', 'token_budget_continue', 'running',
+      'waiting_for_user_choice', 'permission_denied', 'context_exhausted',
+      'cancelled', 'external_resume_ready'
+  )
+  OR (state_reason = 'zombie_cleanup_2026_05_28' AND is_deleted = 1)
+  OR LEFT(state_reason, 11) = 'ext_resume:'
+)
+UNION ALL
+SELECT
   'agent_state_reason_constraint',
   IF(
     COUNT(*) = 1
@@ -260,7 +380,7 @@ SELECT
           ),
           256
         )
-      ) = '3ff1b9272063ecd57935884d4f47def2795f105385cf2d789e55ed7da1aad535',
+      ) = '7bac0f04b3cf2225cdd40a61fe086c4d1ed982bb3b082e96341818040878d100',
     'PASS',
     'FAIL'
   ),
@@ -291,7 +411,7 @@ SELECT
       'absent'
     )
   ),
-  'one exact external-resume constraint (sha 3ff1b927...)'
+  'one exact relational state constraint (sha 7bac0f04...)'
 FROM information_schema.TABLE_CONSTRAINTS constraints_meta
 JOIN information_schema.CHECK_CONSTRAINTS checks_meta
   ON checks_meta.CONSTRAINT_SCHEMA = constraints_meta.CONSTRAINT_SCHEMA
@@ -374,13 +494,13 @@ WHERE visibility = 'official'
   AND source_type = 'custom';
 
 WITH expected AS (
-  SELECT 'document' AS table_name, 'a33468f2c8055a11a306b7d90fcc3cc44c94f60d9ec08ee2bdbfb2378f8c37ef' AS contract_sha
-  UNION ALL SELECT 'user_third_party_account', 'c9e1811858e3f6382732918f3bb249986464b35faf204f6fcf7e4d212f3a7a66'
-  UNION ALL SELECT 'feishu_cli_vault', 'f1fa27c683b067f39c92f81bcec6ff066b0d7737f13198e8d1a27be21f0ea862'
-  UNION ALL SELECT 'feishu_auth_session', 'c3136aa687179a7c64a8880794a1218b6a6825c29b3d563c1423d9dd9b10dcbb'
-  UNION ALL SELECT 'feishu_operation', 'ce97f5ca99c92804433daa4949065a84e666322f407c9ecdc4f03e6afce1b00b'
-  UNION ALL SELECT 'feishu_operation_proof_consumption', '2755c666ff38208b49e60d95204234d11d3764c2812ba284ac3426cca4202deb'
-  UNION ALL SELECT 'feishu_operation_execution_gate', 'f725db4d7f1868d1ec71009999ca259fb3e9cbfd6ca2556e2700334bc2d3c6e0'
+  SELECT 'document' AS table_name, 'ac58e234470d95c46cbefe91cb49a4ea7cdcac1c9391242884638839cadbf112' AS contract_sha
+  UNION ALL SELECT 'user_third_party_account', '11e886c79dd940c542976e0429f8626557f8fa7866e46cae7082b857ae08c855'
+  UNION ALL SELECT 'feishu_cli_vault', '5c0e5a61fdb941a74e6f0565f95ca3657dd012094d76b4d07f8f4665f45fed8b'
+  UNION ALL SELECT 'feishu_auth_session', '1c35a02a83342357259d4756ee47cb3dc34e7a0716b33521ccdee9c30ad56aad'
+  UNION ALL SELECT 'feishu_operation', 'd4a26b6f540244802bde403ad6533933485985f5b3ee6d1ff24e651ad96045bf'
+  UNION ALL SELECT 'feishu_operation_proof_consumption', 'ef5cee4f4c3c8276369137508da748513269b148dd994368733c44c0a16a20fe'
+  UNION ALL SELECT 'feishu_operation_execution_gate', '69484e7f811455d26e9db05f3184ed7790188502d9b9d9375232f900af66f75b'
 ),
 actual AS (
   SELECT
@@ -395,11 +515,13 @@ actual AS (
           SELECT SHA2(
             GROUP_CONCAT(
               CONCAT_WS(
-                '|', column_meta.ORDINAL_POSITION, column_meta.COLUMN_NAME,
+                '|', column_meta.COLUMN_NAME,
                 column_meta.COLUMN_TYPE, column_meta.IS_NULLABLE,
-                COALESCE(column_meta.COLUMN_DEFAULT, '<NULL>'), column_meta.EXTRA
+                COALESCE(column_meta.COLUMN_DEFAULT, '<NULL>'), column_meta.EXTRA,
+                COALESCE(column_meta.CHARACTER_SET_NAME, '<NULL>'),
+                COALESCE(column_meta.COLLATION_NAME, '<NULL>')
               )
-              ORDER BY column_meta.ORDINAL_POSITION SEPARATOR '\n'
+              ORDER BY column_meta.COLUMN_NAME SEPARATOR '\n'
             ),
             256
           )
@@ -412,8 +534,11 @@ actual AS (
             GROUP_CONCAT(
               CONCAT_WS(
                 '|', index_meta.INDEX_NAME, index_meta.NON_UNIQUE,
-                index_meta.SEQ_IN_INDEX, index_meta.COLUMN_NAME,
-                COALESCE(index_meta.SUB_PART, '<NULL>'), index_meta.INDEX_TYPE
+                index_meta.SEQ_IN_INDEX, COALESCE(index_meta.COLUMN_NAME, '<NULL>'),
+                COALESCE(index_meta.SUB_PART, '<NULL>'), index_meta.INDEX_TYPE,
+                COALESCE(index_meta.COLLATION, '<NULL>'),
+                index_meta.IS_VISIBLE,
+                COALESCE(index_meta.EXPRESSION, '<NULL>')
               )
               ORDER BY index_meta.INDEX_NAME, index_meta.SEQ_IN_INDEX SEPARATOR '\n'
             ),
@@ -544,6 +669,43 @@ JOIN information_schema.REFERENTIAL_CONSTRAINTS ref_meta
 WHERE constraints_meta.CONSTRAINT_SCHEMA = DATABASE()
   AND constraints_meta.TABLE_NAME = 'feishu_operation_proof_consumption'
   AND constraints_meta.CONSTRAINT_TYPE = 'FOREIGN KEY';
+
+SELECT
+  'feishu_proof_column_compatibility' AS check_name,
+  IF(COUNT(*) = 2, 'PASS', 'FAIL') AS status,
+  CAST(COUNT(*) AS CHAR) AS observed,
+  '2 exact CHAR(36) operation references' AS expected
+FROM information_schema.COLUMNS proof_column
+JOIN information_schema.COLUMNS operation_column
+  ON operation_column.TABLE_SCHEMA = proof_column.TABLE_SCHEMA
+ AND operation_column.TABLE_NAME = 'feishu_operation'
+ AND operation_column.COLUMN_NAME = 'id'
+WHERE proof_column.TABLE_SCHEMA = DATABASE()
+  AND proof_column.TABLE_NAME = 'feishu_operation_proof_consumption'
+  AND proof_column.COLUMN_NAME IN ('source_operation_id', 'consumer_operation_id')
+  AND proof_column.COLUMN_TYPE = operation_column.COLUMN_TYPE
+  AND proof_column.CHARACTER_SET_NAME <=> operation_column.CHARACTER_SET_NAME
+  AND proof_column.COLLATION_NAME <=> operation_column.COLLATION_NAME
+UNION ALL
+SELECT
+  'feishu_proof_source_orphans',
+  IF(COUNT(*) = 0, 'PASS', 'FAIL'),
+  CAST(COUNT(*) AS CHAR),
+  '0'
+FROM feishu_operation_proof_consumption proof
+LEFT JOIN feishu_operation operation_row
+  ON operation_row.id = proof.source_operation_id
+WHERE operation_row.id IS NULL
+UNION ALL
+SELECT
+  'feishu_proof_consumer_orphans',
+  IF(COUNT(*) = 0, 'PASS', 'FAIL'),
+  CAST(COUNT(*) AS CHAR),
+  '0'
+FROM feishu_operation_proof_consumption proof
+LEFT JOIN feishu_operation operation_row
+  ON operation_row.id = proof.consumer_operation_id
+WHERE operation_row.id IS NULL;
 
 WITH expected AS (
   SELECT 'announcement_read' AS table_name, 'fk_annread_announcement' AS constraint_name,
@@ -703,6 +865,69 @@ SELECT
     256
   )
 FROM agent_run;
+
+SELECT
+  'agent_attachment_complete_projection' AS evidence_name,
+  COUNT(*) AS row_count,
+  COALESCE(
+    SHA2(
+      GROUP_CONCAT(
+        SHA2(CONCAT_WS(
+          '|',
+          CONCAT('id=V:', OCTET_LENGTH(CAST(id AS BINARY)), ':', SHA2(CAST(id AS BINARY), 256)),
+          CONCAT('user_id=V:', OCTET_LENGTH(CAST(user_id AS BINARY)), ':', SHA2(CAST(user_id AS BINARY), 256)),
+          IF(url IS NULL, 'url=N', CONCAT('url=V:', OCTET_LENGTH(CAST(url AS BINARY)), ':', SHA2(CAST(url AS BINARY), 256))),
+          IF(filename IS NULL, 'filename=N', CONCAT('filename=V:', OCTET_LENGTH(CAST(filename AS BINARY)), ':', SHA2(CAST(filename AS BINARY), 256))),
+          IF(mime_type IS NULL, 'mime_type=N', CONCAT('mime_type=V:', OCTET_LENGTH(CAST(mime_type AS BINARY)), ':', SHA2(CAST(mime_type AS BINARY), 256))),
+          IF(size IS NULL, 'size=N', CONCAT('size=V:', OCTET_LENGTH(CAST(size AS BINARY)), ':', SHA2(CAST(size AS BINARY), 256))),
+          IF(modality IS NULL, 'modality=N', CONCAT('modality=V:', OCTET_LENGTH(CAST(modality AS BINARY)), ':', SHA2(CAST(modality AS BINARY), 256))),
+          IF(width IS NULL, 'width=N', CONCAT('width=V:', OCTET_LENGTH(CAST(width AS BINARY)), ':', SHA2(CAST(width AS BINARY), 256))),
+          IF(height IS NULL, 'height=N', CONCAT('height=V:', OCTET_LENGTH(CAST(height AS BINARY)), ':', SHA2(CAST(height AS BINARY), 256))),
+          IF(ocr_text IS NULL, 'ocr_text=N', CONCAT('ocr_text=V:', OCTET_LENGTH(CAST(ocr_text AS BINARY)), ':', SHA2(CAST(ocr_text AS BINARY), 256))),
+          IF(vision_description IS NULL, 'vision_description=N', CONCAT('vision_description=V:', OCTET_LENGTH(CAST(vision_description AS BINARY)), ':', SHA2(CAST(vision_description AS BINARY), 256))),
+          IF(text_fallback IS NULL, 'text_fallback=N', CONCAT('text_fallback=V:', OCTET_LENGTH(CAST(text_fallback AS BINARY)), ':', SHA2(CAST(text_fallback AS BINARY), 256))),
+          IF(fallback_ready IS NULL, 'fallback_ready=N', CONCAT('fallback_ready=V:', OCTET_LENGTH(CAST(fallback_ready AS BINARY)), ':', SHA2(CAST(fallback_ready AS BINARY), 256))),
+          IF(fallback_error IS NULL, 'fallback_error=N', CONCAT('fallback_error=V:', OCTET_LENGTH(CAST(fallback_error AS BINARY)), ':', SHA2(CAST(fallback_error AS BINARY), 256))),
+          IF(parsed_content IS NULL, 'parsed_content=N', CONCAT('parsed_content=V:', OCTET_LENGTH(CAST(parsed_content AS BINARY)), ':', SHA2(CAST(parsed_content AS BINARY), 256))),
+          IF(parsed_content_sha256 IS NULL, 'parsed_content_sha256=N', CONCAT('parsed_content_sha256=V:', OCTET_LENGTH(CAST(parsed_content_sha256 AS BINARY)), ':', SHA2(CAST(parsed_content_sha256 AS BINARY), 256))),
+          IF(parsed_content_byte_size IS NULL, 'parsed_content_byte_size=N', CONCAT('parsed_content_byte_size=V:', OCTET_LENGTH(CAST(parsed_content_byte_size AS BINARY)), ':', SHA2(CAST(parsed_content_byte_size AS BINARY), 256))),
+          IF(parsed_page_count IS NULL, 'parsed_page_count=N', CONCAT('parsed_page_count=V:', OCTET_LENGTH(CAST(parsed_page_count AS BINARY)), ':', SHA2(CAST(parsed_page_count AS BINARY), 256))),
+          IF(parsed_at IS NULL, 'parsed_at=N', CONCAT('parsed_at=V:', OCTET_LENGTH(CAST(parsed_at AS BINARY)), ':', SHA2(CAST(parsed_at AS BINARY), 256))),
+          IF(fallback_started_at IS NULL, 'fallback_started_at=N', CONCAT('fallback_started_at=V:', OCTET_LENGTH(CAST(fallback_started_at AS BINARY)), ':', SHA2(CAST(fallback_started_at AS BINARY), 256))),
+          IF(fallback_completed_at IS NULL, 'fallback_completed_at=N', CONCAT('fallback_completed_at=V:', OCTET_LENGTH(CAST(fallback_completed_at AS BINARY)), ':', SHA2(CAST(fallback_completed_at AS BINARY), 256))),
+          IF(retry_count IS NULL, 'retry_count=N', CONCAT('retry_count=V:', OCTET_LENGTH(CAST(retry_count AS BINARY)), ':', SHA2(CAST(retry_count AS BINARY), 256))),
+          IF(created_at IS NULL, 'created_at=N', CONCAT('created_at=V:', OCTET_LENGTH(CAST(created_at AS BINARY)), ':', SHA2(CAST(created_at AS BINARY), 256)))
+        ), 256)
+        ORDER BY id SEPARATOR '\n'
+      ),
+      256
+    ),
+    SHA2('', 256)
+  ) AS sha256
+FROM agent_attachment;
+
+SELECT
+  'feishu_proof_business_projection' AS evidence_name,
+  COUNT(*) AS row_count,
+  COALESCE(
+    SHA2(
+      GROUP_CONCAT(
+        SHA2(CONCAT_WS(
+          '|',
+          CONCAT('source_operation_id=V:', OCTET_LENGTH(CAST(source_operation_id AS BINARY)), ':', SHA2(CAST(source_operation_id AS BINARY), 256)),
+          CONCAT('consumer_operation_id=V:', OCTET_LENGTH(CAST(consumer_operation_id AS BINARY)), ':', SHA2(CAST(consumer_operation_id AS BINARY), 256)),
+          CONCAT('user_id=V:', OCTET_LENGTH(CAST(user_id AS BINARY)), ':', SHA2(CAST(user_id AS BINARY), 256)),
+          CONCAT('generation=V:', OCTET_LENGTH(CAST(generation AS BINARY)), ':', SHA2(CAST(generation AS BINARY), 256)),
+          CONCAT('agent_run_id=V:', OCTET_LENGTH(CAST(agent_run_id AS BINARY)), ':', SHA2(CAST(agent_run_id AS BINARY), 256)),
+          CONCAT('created_at=V:', OCTET_LENGTH(CAST(created_at AS BINARY)), ':', SHA2(CAST(created_at AS BINARY), 256))
+        ), 256)
+        ORDER BY source_operation_id SEPARATOR '\n'
+      ),
+      256
+    ),
+    SHA2('', 256)
+  ) AS sha256
+FROM feishu_operation_proof_consumption;
 
 CHECKSUM TABLE
   `user`, `trial_grant`, `credit_account`, `credit_cycle`,

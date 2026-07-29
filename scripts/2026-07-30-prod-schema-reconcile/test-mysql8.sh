@@ -160,6 +160,10 @@ assert_no_fail_rows "$preflight_output" "preflight"
 
 before_projection="$(mysql_query "$subscription_projection_sql")"
 before_attachment_projection="$(mysql_query "$attachment_projection_sql")"
+before_attachment_complete_projection="$(
+  printf '%s\n' "$preflight_output" |
+    awk -F '\t' '$1 == "agent_attachment_complete_projection" { print $2 ":" $3 }'
+)"
 before_agent_run_projection="$(mysql_query "$agent_run_projection_sql")"
 before_protected_checksums="$(mysql_query "$protected_checksum_sql")"
 before_new_table_count="$(mysql_query "
@@ -181,12 +185,29 @@ verify_first="$(mysql_stdin < "$VERIFY")"
 assert_no_fail_rows "$verify_first" "first verify"
 after_first_projection="$(mysql_query "$subscription_projection_sql")"
 after_first_attachment_projection="$(mysql_query "$attachment_projection_sql")"
+after_first_attachment_complete_projection="$(
+  printf '%s\n' "$verify_first" |
+    awk -F '\t' '$1 == "agent_attachment_complete_projection" { print $2 ":" $3 }'
+)"
 after_first_agent_run_projection="$(mysql_query "$agent_run_projection_sql")"
 after_first_protected_checksums="$(mysql_query "$protected_checksum_sql")"
 assert_equal "$before_projection" "$after_first_projection" "first-apply subscription projection"
 assert_equal "$before_attachment_projection" "$after_first_attachment_projection" "first-apply attachment projection"
+assert_equal "$before_attachment_complete_projection" "$after_first_attachment_complete_projection" \
+  "first-apply complete attachment projection"
 assert_equal "$before_agent_run_projection" "$after_first_agent_run_projection" "first-apply agent-run projection"
 assert_equal "$before_protected_checksums" "$after_first_protected_checksums" "first-apply protected checksums"
+
+# Physical column order is not a runtime contract. Reorder one exact Feishu
+# column and require both schema gates to remain green.
+mysql_query "
+ALTER TABLE feishu_auth_session
+  MODIFY protocol_version TINYINT UNSIGNED NOT NULL DEFAULT 1 AFTER completed_at;
+"
+reordered_preflight="$(mysql_stdin < "$PREFLIGHT")"
+assert_no_fail_rows "$reordered_preflight" "reordered-column preflight"
+reordered_verify="$(mysql_stdin < "$VERIFY")"
+assert_no_fail_rows "$reordered_verify" "reordered-column verify"
 
 first_config_counts="$(mysql_query "
 SELECT CONCAT_WS(
@@ -203,10 +224,16 @@ verify_second="$(mysql_stdin < "$VERIFY")"
 assert_no_fail_rows "$verify_second" "second verify"
 after_second_projection="$(mysql_query "$subscription_projection_sql")"
 after_second_attachment_projection="$(mysql_query "$attachment_projection_sql")"
+after_second_attachment_complete_projection="$(
+  printf '%s\n' "$verify_second" |
+    awk -F '\t' '$1 == "agent_attachment_complete_projection" { print $2 ":" $3 }'
+)"
 after_second_agent_run_projection="$(mysql_query "$agent_run_projection_sql")"
 after_second_protected_checksums="$(mysql_query "$protected_checksum_sql")"
 assert_equal "$before_projection" "$after_second_projection" "second-apply subscription projection"
 assert_equal "$before_attachment_projection" "$after_second_attachment_projection" "second-apply attachment projection"
+assert_equal "$before_attachment_complete_projection" "$after_second_attachment_complete_projection" \
+  "second-apply complete attachment projection"
 assert_equal "$before_agent_run_projection" "$after_second_agent_run_projection" "second-apply agent-run projection"
 assert_equal "$before_protected_checksums" "$after_second_protected_checksums" "second-apply protected checksums"
 
@@ -248,6 +275,18 @@ if mysql_query "UPDATE agent_run SET state_reason='not-a-runtime-state' WHERE id
   echo "ERROR: agent_run CHECK accepted an unsupported state" >&2
   exit 1
 fi
+if mysql_query "UPDATE agent_run SET state_reason='', status='terminated' WHERE id=1;" >/dev/null 2>&1; then
+  echo "ERROR: agent_run CHECK accepted an empty state outside a running row" >&2
+  exit 1
+fi
+if mysql_query "
+  UPDATE agent_run
+  SET state_reason='zombie_cleanup_2026_05_28', is_deleted=0
+  WHERE id=1;
+" >/dev/null 2>&1; then
+  echo "ERROR: agent_run CHECK accepted zombie cleanup on a visible row" >&2
+  exit 1
+fi
 mysql_query "UPDATE agent_run SET state_reason='completed' WHERE id=1;"
 
 # A same-name but overly broad CHECK must be detected and repaired exactly.
@@ -280,8 +319,197 @@ partial_verify="$(mysql_stdin < "$VERIFY")"
 assert_no_fail_rows "$partial_verify" "partial-state verify"
 assert_equal "$before_projection" "$(mysql_query "$subscription_projection_sql")" "partial-retry subscription projection"
 assert_equal "$before_attachment_projection" "$(mysql_query "$attachment_projection_sql")" "partial-retry attachment projection"
+partial_attachment_complete_projection="$(
+  printf '%s\n' "$partial_verify" |
+    awk -F '\t' '$1 == "agent_attachment_complete_projection" { print $2 ":" $3 }'
+)"
+assert_equal "$before_attachment_complete_projection" "$partial_attachment_complete_projection" \
+  "partial-retry complete attachment projection"
 assert_equal "$before_agent_run_projection" "$(mysql_query "$agent_run_projection_sql")" "partial-retry agent-run projection"
 assert_equal "$before_protected_checksums" "$(mysql_query "$protected_checksum_sql")" "partial-retry protected checksums"
+
+# Dev historically has a complete nullable parsed-content schema. Accept that
+# exact shape, preserve NULL values byte-for-byte, and never normalize it during
+# this rollout.
+mysql_query "
+ALTER TABLE agent_attachment
+  MODIFY parsed_content_sha256 VARCHAR(71) NULL DEFAULT NULL,
+  MODIFY parsed_content_byte_size BIGINT NULL DEFAULT 0,
+  MODIFY parsed_page_count BIGINT NULL DEFAULT 0;
+UPDATE agent_attachment
+SET parsed_content_sha256=NULL,
+    parsed_content_byte_size=NULL,
+    parsed_page_count=NULL
+WHERE id=1;
+"
+legacy_preflight="$(mysql_stdin < "$PREFLIGHT")"
+assert_no_fail_rows "$legacy_preflight" "legacy attachment preflight"
+if ! printf '%s\n' "$legacy_preflight" |
+  grep -q '^attachment_parsed_column_shapes'$'\tPASS\tlegacy_complete'; then
+  echo "ERROR: exact Dev attachment schema was not identified as legacy_complete" >&2
+  exit 1
+fi
+before_legacy_attachment_projection="$(
+  printf '%s\n' "$legacy_preflight" |
+    awk -F '\t' '$1 == "agent_attachment_complete_projection" { print $2 ":" $3 }'
+)"
+mysql_stdin < "$MIGRATION" >/dev/null
+legacy_verify="$(mysql_stdin < "$VERIFY")"
+assert_no_fail_rows "$legacy_verify" "legacy attachment verify"
+after_legacy_attachment_projection="$(
+  printf '%s\n' "$legacy_verify" |
+    awk -F '\t' '$1 == "agent_attachment_complete_projection" { print $2 ":" $3 }'
+)"
+assert_equal "$before_legacy_attachment_projection" "$after_legacy_attachment_projection" \
+  "legacy complete attachment projection"
+if [ "$(mysql_query "
+  SELECT COUNT(*) FROM agent_attachment
+  WHERE id=1
+    AND parsed_content_sha256 IS NULL
+    AND parsed_content_byte_size IS NULL
+    AND parsed_page_count IS NULL;
+")" != "1" ]; then
+  echo "ERROR: migration rewrote legacy nullable attachment values" >&2
+  exit 1
+fi
+
+# A mixed shape is neither the reviewed Dev legacy schema nor the final schema.
+mysql_query "ALTER TABLE agent_attachment MODIFY parsed_page_count INT NULL DEFAULT 0;"
+mixed_attachment_preflight="$(mysql_stdin < "$PREFLIGHT")"
+if ! printf '%s\n' "$mixed_attachment_preflight" |
+  grep -q '^attachment_parsed_column_shapes'$'\tFAIL\t'; then
+  echo "ERROR: mixed attachment schema unexpectedly passed preflight" >&2
+  exit 1
+fi
+mysql_query "ALTER TABLE agent_attachment MODIFY parsed_page_count BIGINT NULL DEFAULT 0;"
+mysql_query "
+ALTER TABLE agent_attachment
+  MODIFY parsed_at DATETIME(3) NULL DEFAULT CURRENT_TIMESTAMP(3);
+"
+wrong_attachment_metadata_preflight="$(mysql_stdin < "$PREFLIGHT")"
+if ! printf '%s\n' "$wrong_attachment_metadata_preflight" |
+  grep -q '^attachment_parsed_column_metadata'$'\tFAIL\t'; then
+  echo "ERROR: incompatible attachment default metadata unexpectedly passed preflight" >&2
+  exit 1
+fi
+mysql_query "
+ALTER TABLE agent_attachment
+  MODIFY parsed_at DATETIME(3) NULL DEFAULT NULL;
+"
+
+# Dev can already contain successful Feishu operations and proof-consumption
+# rows while both proof FKs are missing. Repair the exact zero-FK state without
+# changing those business rows.
+mysql_query "
+INSERT INTO feishu_operation (
+  id, user_id, generation, agent_run_id, tool_call_id, idempotency_key,
+  command_path, domain, risk_level, request_ciphertext, key_version,
+  request_fingerprint, state, attempt_count, created_at, updated_at
+) VALUES
+  (
+    '00000000-0000-0000-0000-000000000001', 101, 1, 1, 'tool-source', 'proof-source',
+    'drive.file.get', 'drive', 'read', X'00', 'test-v1',
+    REPEAT('a', 64), 'succeeded', 1, '2026-07-20 11:00:00.000', '2026-07-20 11:00:01.000'
+  ),
+  (
+    '00000000-0000-0000-0000-000000000002', 101, 1, 1, 'tool-consumer', 'proof-consumer',
+    'drive.file.copy', 'drive', 'write', X'01', 'test-v1',
+    REPEAT('b', 64), 'succeeded', 1, '2026-07-20 11:01:00.000', '2026-07-20 11:01:01.000'
+  );
+INSERT INTO feishu_operation_proof_consumption (
+  source_operation_id, consumer_operation_id, user_id, generation, agent_run_id, created_at
+) VALUES (
+  '00000000-0000-0000-0000-000000000001',
+  '00000000-0000-0000-0000-000000000002',
+  101, 1, 1, '2026-07-20 11:02:00.000'
+);
+ALTER TABLE feishu_operation_proof_consumption
+  DROP FOREIGN KEY fk_feishu_proof_source_operation,
+  DROP FOREIGN KEY fk_feishu_proof_consumer_operation,
+  MODIFY created_at DATETIME(3) NOT NULL AFTER source_operation_id;
+"
+proof_preflight="$(mysql_stdin < "$PREFLIGHT")"
+assert_no_fail_rows "$proof_preflight" "zero-FK populated proof preflight"
+before_proof_projection="$(
+  printf '%s\n' "$proof_preflight" |
+    awk -F '\t' '$1 == "feishu_proof_business_projection" { print $2 ":" $3 }'
+)"
+# Close the preflight/apply race: an orphan introduced after the read-only
+# check must still be rejected by the migration's own first assertion, and no
+# FK may have been added before that failure.
+mysql_query "
+UPDATE feishu_operation_proof_consumption
+SET source_operation_id='99999999-9999-9999-9999-999999999999';
+"
+if mysql_stdin < "$MIGRATION" >/dev/null 2>&1; then
+  echo "ERROR: migration accepted a proof orphan introduced after preflight" >&2
+  exit 1
+fi
+if [ "$(mysql_query "
+  SELECT COUNT(*)
+  FROM information_schema.TABLE_CONSTRAINTS
+  WHERE CONSTRAINT_SCHEMA=DATABASE()
+    AND TABLE_NAME='feishu_operation_proof_consumption'
+    AND CONSTRAINT_TYPE='FOREIGN KEY';
+")" != "0" ]; then
+  echo "ERROR: failed migration partially added proof foreign keys" >&2
+  exit 1
+fi
+mysql_query "
+UPDATE feishu_operation_proof_consumption
+SET source_operation_id='00000000-0000-0000-0000-000000000001';
+"
+mysql_stdin < "$MIGRATION" >/dev/null
+proof_verify="$(mysql_stdin < "$VERIFY")"
+assert_no_fail_rows "$proof_verify" "repaired proof verify"
+after_proof_projection="$(
+  printf '%s\n' "$proof_verify" |
+    awk -F '\t' '$1 == "feishu_proof_business_projection" { print $2 ":" $3 }'
+)"
+assert_equal "$before_proof_projection" "$after_proof_projection" \
+  "Feishu proof business projection"
+
+# One FK is an interrupted/ambiguous state and must not be guessed.
+mysql_query "
+ALTER TABLE feishu_operation_proof_consumption
+  DROP FOREIGN KEY fk_feishu_proof_consumer_operation;
+"
+one_fk_preflight="$(mysql_stdin < "$PREFLIGHT")"
+if ! printf '%s\n' "$one_fk_preflight" |
+  grep -q '^feishu_proof_fk_contract'$'\tFAIL\t'; then
+  echo "ERROR: one-FK proof state unexpectedly passed preflight" >&2
+  exit 1
+fi
+mysql_query "
+ALTER TABLE feishu_operation_proof_consumption
+  DROP FOREIGN KEY fk_feishu_proof_source_operation;
+UPDATE feishu_operation_proof_consumption
+SET source_operation_id='99999999-9999-9999-9999-999999999999';
+"
+orphan_proof_preflight="$(mysql_stdin < "$PREFLIGHT")"
+if ! printf '%s\n' "$orphan_proof_preflight" |
+  grep -q '^feishu_proof_source_orphans'$'\tFAIL\t'; then
+  echo "ERROR: orphan proof source unexpectedly passed preflight" >&2
+  exit 1
+fi
+mysql_query "
+UPDATE feishu_operation_proof_consumption
+SET source_operation_id='00000000-0000-0000-0000-000000000001';
+ALTER TABLE feishu_operation_proof_consumption
+  MODIFY source_operation_id VARCHAR(36) NOT NULL;
+"
+wrong_proof_type_preflight="$(mysql_stdin < "$PREFLIGHT")"
+if ! printf '%s\n' "$wrong_proof_type_preflight" |
+  grep -q '^feishu_proof_column_compatibility'$'\tFAIL\t'; then
+  echo "ERROR: incompatible proof operation ID type unexpectedly passed preflight" >&2
+  exit 1
+fi
+mysql_query "
+ALTER TABLE feishu_operation_proof_consumption
+  MODIFY source_operation_id CHAR(36) NOT NULL;
+"
+mysql_stdin < "$MIGRATION" >/dev/null
+assert_no_fail_rows "$(mysql_stdin < "$VERIFY")" "restored proof verify"
 
 # Wrong table/index/FK/config contracts and duplicate notification pairs must fail before apply.
 mysql_query "DROP TABLE document;"
