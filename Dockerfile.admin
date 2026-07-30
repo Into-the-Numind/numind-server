@@ -38,7 +38,7 @@ FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=Asia/Shanghai
-ARG UBUNTU_MIRROR=https://mirrors.aliyun.com/ubuntu
+ARG UBUNTU_MIRROR=http://mirrors.aliyun.com/ubuntu
 
 RUN if [ -n "$UBUNTU_MIRROR" ]; then \
       for source_file in /etc/apt/sources.list /etc/apt/sources.list.d/*.sources; do \
