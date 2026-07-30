@@ -82,3 +82,23 @@ Large input/output files also cannot be accumulated in API process memory.
 - `go vet ./...` and `golangci-lint run ./...` pass through `task lint`.
 - `config_prod.yaml`, the Prod database, and all environment switches remain
   untouched.
+
+## Accepted residual risk and gate exception
+
+The third independent review found no P0 issue. The specification review
+passed with one P2, while the quality review found one P1 and the same P2:
+
+- The anonymous Seccomp file is unlinked immediately, but a same-UID process
+  could theoretically retain a writable descriptor during the very short
+  create-to-unlink window. Replacing this with a sealed Linux `memfd` is
+  deferred.
+- When the helper is asked to wrap `/workdir/output` itself, its internal entry
+  count can differ from the host archive-header ceiling by one. The production
+  call path archives `/workdir/output/.`; the mismatch fails closed rather than
+  accepting extra output.
+
+On 2026-07-30 the product owner explicitly directed the rollout to stop
+changing this isolation issue and continue to the remaining tasks. T3 therefore
+remains complete but is not counted as formally reviewed. This exception does
+not authorize a Prod deployment and does not touch Prod configuration, data, or
+services.
