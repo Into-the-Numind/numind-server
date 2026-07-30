@@ -23,6 +23,7 @@ type mockSandboxPool struct {
 	borrowErr   error
 	returnErr   error
 	dc          sandbox.DockerClient
+	sess        *sandbox.Session
 	borrowCount atomic.Int64
 	returnCount atomic.Int64
 }
@@ -33,6 +34,9 @@ func (m *mockSandboxPool) Borrow(_ context.Context) (*sandbox.Session, error) {
 	m.borrowCount.Add(1)
 	if m.borrowErr != nil {
 		return nil, m.borrowErr
+	}
+	if m.sess != nil {
+		return m.sess, nil
 	}
 	return &sandbox.Session{
 		ContainerID: "mock-container-abc",
@@ -50,6 +54,37 @@ func (m *mockSandboxPool) Size() int                          { return 0 }
 func (m *mockSandboxPool) DockerClient() sandbox.DockerClient { return m.dc }
 func (m *mockSandboxPool) IsEnabled() bool                    { return true }
 
+type mockBrokerLifecycleClient struct {
+	*sandbox.MockDockerClient
+	activateErr       error
+	activateLeaseID   string
+	activateRunID     uint64
+	activateSessionID uint64
+}
+
+var _ sandbox.BrokerLeaseLifecycle = (*mockBrokerLifecycleClient)(nil)
+var _ sandbox.DockerClient = (*mockBrokerLifecycleClient)(nil)
+
+func (m *mockBrokerLifecycleClient) Activate(
+	_ context.Context,
+	leaseID string,
+	agentRunID uint64,
+	sandboxSessionID uint64,
+) error {
+	m.activateLeaseID = leaseID
+	m.activateRunID = agentRunID
+	m.activateSessionID = sandboxSessionID
+	return m.activateErr
+}
+
+func (*mockBrokerLifecycleClient) Heartbeat(context.Context, string) error {
+	return nil
+}
+
+func (*mockBrokerLifecycleClient) MarkPersisting(context.Context, string) error {
+	return nil
+}
+
 // ===========================================================================
 // mock IAgentSandboxSessionStore
 // ===========================================================================
@@ -60,6 +95,8 @@ type mockSandboxStore struct {
 	updateErr      error
 	createdRecords []*model.AgentSandboxSession
 	updateCalls    atomic.Int64
+	lastStatus     string
+	lastErrMsg     string
 }
 
 func (m *mockSandboxStore) Create(_ context.Context, sess *model.AgentSandboxSession) error {
@@ -70,8 +107,10 @@ func (m *mockSandboxStore) Create(_ context.Context, sess *model.AgentSandboxSes
 	m.createdRecords = append(m.createdRecords, sess)
 	return nil
 }
-func (m *mockSandboxStore) UpdateState(_ context.Context, _ uint64, _ string, _ *int, _ string, _ *time.Time) error {
+func (m *mockSandboxStore) UpdateState(_ context.Context, _ uint64, status string, _ *int, errMsg string, _ *time.Time) error {
 	m.updateCalls.Add(1)
+	m.lastStatus = status
+	m.lastErrMsg = errMsg
 	return m.updateErr
 }
 func (m *mockSandboxStore) GetByContainerID(_ context.Context, _ string) (*model.AgentSandboxSession, error) {
@@ -149,6 +188,83 @@ func TestSandboxHookManager_PreToolCall_HappyPath(t *testing.T) {
 	}
 	if sess.ContainerID != "mock-container-abc" {
 		t.Errorf("stashed session ContainerID = %q; want mock-container-abc", sess.ContainerID)
+	}
+}
+
+func TestSandboxHookManager_PreToolCall_BrokerActivatesAfterAuditCreate(t *testing.T) {
+	lifecycle := &mockBrokerLifecycleClient{
+		MockDockerClient: sandbox.NewMockDockerClient(),
+	}
+	pool := &mockSandboxPool{
+		dc: lifecycle,
+		sess: &sandbox.Session{
+			ContainerID: "lease-1",
+			ImageTag:    "sandbox-skill@sha256:abc",
+			Config:      sandbox.DefaultSandboxConfig,
+			BorrowedAt:  time.Now(),
+		},
+	}
+	storeM := &mockSandboxStore{}
+	m := NewSandboxHookManager(pool, storeM)
+	ctx := middleware.NewContextWithUserID(context.Background(), 30)
+	ctx = WithRunID(ctx, 100)
+
+	_, err := m.preToolCall(ctx, &mockEinoTool{name: "run_python"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lifecycle.activateLeaseID != "lease-1" ||
+		lifecycle.activateRunID != 100 ||
+		lifecycle.activateSessionID != 1 {
+		t.Fatalf("activate lease=%q run=%d session=%d",
+			lifecycle.activateLeaseID,
+			lifecycle.activateRunID,
+			lifecycle.activateSessionID)
+	}
+	if pool.returnCount.Load() != 0 {
+		t.Fatalf("return count = %d", pool.returnCount.Load())
+	}
+	if m.SandboxSessionFor(100, "run_python") == nil {
+		t.Fatal("broker session was not stashed after activation")
+	}
+}
+
+func TestSandboxHookManager_PreToolCall_BrokerActivateFailureClosesAuditAndLease(t *testing.T) {
+	lifecycle := &mockBrokerLifecycleClient{
+		MockDockerClient: sandbox.NewMockDockerClient(),
+		activateErr:      sandbox.ErrBrokerUnavailable,
+	}
+	pool := &mockSandboxPool{
+		dc: lifecycle,
+		sess: &sandbox.Session{
+			ContainerID: "lease-1",
+			ImageTag:    "sandbox-skill@sha256:abc",
+			Config:      sandbox.DefaultSandboxConfig,
+			BorrowedAt:  time.Now(),
+		},
+	}
+	storeM := &mockSandboxStore{}
+	m := NewSandboxHookManager(pool, storeM)
+	ctx := middleware.NewContextWithUserID(context.Background(), 30)
+	ctx = WithRunID(ctx, 100)
+
+	_, err := m.preToolCall(ctx, &mockEinoTool{name: "bash_exec"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pool.returnCount.Load() != 1 {
+		t.Fatalf("return count = %d", pool.returnCount.Load())
+	}
+	if storeM.updateCalls.Load() != 1 ||
+		storeM.lastStatus != "failed" ||
+		storeM.lastErrMsg != "broker activate failed" {
+		t.Fatalf("audit close calls=%d status=%q err=%q",
+			storeM.updateCalls.Load(),
+			storeM.lastStatus,
+			storeM.lastErrMsg)
+	}
+	if m.SandboxSessionFor(100, "bash_exec") != nil {
+		t.Fatal("broker session was stashed despite activation failure")
 	}
 }
 

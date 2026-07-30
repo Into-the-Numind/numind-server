@@ -146,12 +146,47 @@ func (m *SandboxHookManager) preToolCall(ctx context.Context, t einotool.BaseToo
 		_ = m.pool.Return(sess, -1, "audit Create failed")
 		return HookActionContinue, nil
 	}
+	if err := m.activateBrokerLease(ctx, sess, runID, record.ID); err != nil {
+		log.Warnw("SandboxHook.PreToolCall: broker activate failed",
+			"run_id", runID,
+			"sandbox_session_id", record.ID,
+			"error", err)
+		_ = m.pool.Return(sess, -1, "broker activate failed")
+		now := time.Now()
+		exitCode := -1
+		_ = m.sessStore.UpdateState(
+			ctx,
+			record.ID,
+			"failed",
+			&exitCode,
+			"broker activate failed",
+			&now,
+		)
+		return HookActionContinue, nil
+	}
 
 	m.borrows.Store(borrowKey(runID, info.Name), &sandboxBorrow{
 		sess:      sess,
 		sessionID: record.ID,
 	})
 	return HookActionContinue, nil
+}
+
+func (m *SandboxHookManager) activateBrokerLease(
+	ctx context.Context,
+	sess *sandbox.Session,
+	runID uint64,
+	sandboxSessionID uint64,
+) error {
+	if m == nil || sess == nil || runID == 0 || sandboxSessionID == 0 {
+		return nil
+	}
+	client := m.DockerClient()
+	lifecycle, ok := client.(sandbox.BrokerLeaseLifecycle)
+	if !ok {
+		return nil
+	}
+	return lifecycle.Activate(ctx, sess.ContainerID, runID, sandboxSessionID)
 }
 
 // postToolCall finalises the bash_exec audit row + returns the session to
