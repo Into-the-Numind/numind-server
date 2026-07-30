@@ -89,17 +89,17 @@ features:
   ndf_version: '3.0'
   description: Run the Dev-proven Sandbox feature on the existing Prod host while isolating its Docker control plane, networks, secrets, mounts, and resource budget from customer-facing services and data.
   classification_reason: 'Standard: production host container-control security, a separate Sandbox runtime, build/deploy scripts, resource policy, and rollback verification span more than three files and are high risk.'
-  last_updated_by: ai-s5-automatic-verification
-  last_updated_at: '2026-07-30T17:36:09+0800'
+  last_updated_by: ai-s6-merge
+  last_updated_at: '2026-07-30T17:39:29+0800'
   last_verified: '2026-07-30T17:36:09+0800'
   created_at: '2026-07-30T01:26:00+0800'
   track: standard
-  stage: S5
+  stage: S6
   status: active
   repos: [numind-server]
-  branches: {numind-server: feature/prod-sandbox-isolation}
-  worktrees: {numind-server: /private/tmp/wt-prod-sandbox-isolation-numind-server}
-  progress: {total_tasks: 18, completed_tasks: 18, reviewed_tasks: 9, current_task: 'S5 backend/Sandbox automatic verification passed; S6 merge to develop and Dev same-shape product verification pending'}
+  branches: {numind-server: develop}
+  worktrees: {numind-server: /Users/zhiyuchen/Documents/10_跃迁有数/有数AI工作台/莫小派/Codes/numind-server}
+  progress: {total_tasks: 18, completed_tasks: 18, reviewed_tasks: 9, current_task: 'S6 merge to develop complete at 70b7b79f; Dev deployment and same-shape product verification pending'}
   artifacts:
     requirement: requirements/prod-sandbox-isolation.md
     proposal: proposals/prod-sandbox-isolation-proposal.md
@@ -176,6 +176,7 @@ features:
   - 'T18: final integration/security gate added Go and shell contracts for five-slot FIFO, fixed 512MiB/1CPU/64PIDs runtime limits, no Docker socket/capability escape, broker Unix transport ceilings, deploy/provision/artifact contracts, and config_prod immutability. T18 found a real seccomp_sha256 prefix mismatch in T16/T17 config generation; it was fixed in separate commit 90a2b1ae before T18 resumed. Focused gate scripts, go test ./..., race tests, task lint, and config_prod unchanged checks passed; artifact image build remains static-only locally due DockerHub metadata timeout and must be strict-verified on the build server.'
   - 'S4 post-review release hardening: independent backend release review found two Prod blockers before deployment: sandboxd could not read root-owned config/env files, and the checked seccomp profile was not installed with the broker unit bundle. Both were fixed with provisioning ownership checks and a bundled deploy/sandbox/seccomp.json checksum contract. Dockerfile package installs now default to domestic Alpine/Debian/Ubuntu mirrors so build-server strict verification does not hang on slow package sources. Local gates passed, config_prod.yaml remained unchanged, and build-server NUMIND_SANDBOX_ARTIFACTS_STRICT=1 bash scripts/cicd/test-sandbox-artifacts.sh passed on 2026-07-30.'
   - 'S5 automatic verification: backend/Sandbox gates passed on the feature worktree without touching Prod or config_prod.yaml: task test, task lint with GOPATH/bin in PATH, sandbox capacity/provisioning/release-preflight/isolation/artifact scripts, targeted Sandbox race tests, and build-server strict artifact image verification. Frontend/E2E/browser QA are N/A for this backend-only worktree and remain product-level S6 Dev verification after ndf-done/deploy-dev.'
+  - 'S6 merge: ndf-done merged feature/prod-sandbox-isolation into develop, pushed origin/develop at 70b7b79f, deleted the feature worktree, and deleted the local feature branch. Prod remains untouched; Dev deployment is the next gate.'
   blockers: []
 - id: xhs-analytics-summary-tests
   ndf_version: '3.0'
