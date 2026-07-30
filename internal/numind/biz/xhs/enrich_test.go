@@ -45,6 +45,14 @@ func (m *enrichMockStore) seed(userID uint, id uint64, status string) {
 	m.userOf[id] = userID
 }
 
+func (m *enrichMockStore) seedNote(note *model.XhsTopicNote) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cp := *note
+	m.rows[note.ID] = &cp
+	m.userOf[note.ID] = note.UserID
+}
+
 func (m *enrichMockStore) statusOf(id uint64) string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -345,4 +353,25 @@ func TestEnricher_NoteNotPending_Skips(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	assert.Equal(t, model.XhsEnrichDone, m.statusOf(700))
 	assert.Equal(t, int32(0), atomic.LoadInt32(&m.enrichCount), "非 pending 笔记不应被富化")
+}
+
+// TestEnricher_VideoNoteWithoutURLMarksPartial 复现线上问题：
+// 插件把 video 笔记入库但 video_url 为空时，富化不应静默标记 done。
+func TestEnricher_VideoNoteWithoutURLMarksPartial(t *testing.T) {
+	viper.Reset()
+	defer viper.Reset()
+
+	m := newEnrichMockStore()
+	const userID = uint(6)
+	note := &model.XhsTopicNote{
+		ID:           900,
+		UserID:       userID,
+		NoteType:     model.XhsNoteTypeVideo,
+		EnrichStatus: model.XhsEnrichPending,
+	}
+	m.seedNote(note)
+
+	e := NewEnricher(m)
+	require.NoError(t, e.enrichOne(context.Background(), userID, note))
+	assert.Equal(t, model.XhsEnrichPartial, m.statusOf(900), "视频笔记缺失 video_url 时应暴露为 partial，不能伪装 done")
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -225,9 +226,15 @@ func (e *Enricher) enrichOne(ctx context.Context, userID uint, note *model.XhsTo
 	// 视频段：note_type==video 且有直链 → 转写 + biz 层显式扣费。
 	// 终态由视频段 outcome 决定（done/partial/insufficient_credits）；非视频笔记直接 done。
 	// 1. 图片镜像到 COS（小红书直链会过期；展示从 COS 读）。封面取首图镜像结果。
+	videoURLMissing := note.NoteType == model.XhsNoteTypeVideo && strings.TrimSpace(note.VideoURL) == ""
 	var imgs []string
 	if len(note.Images) > 0 {
 		_ = json.Unmarshal(note.Images, &imgs)
+	}
+	if videoURLMissing {
+		// 视频采集失败时，插件侧可能把页面推荐图/播放器杂图误塞进 images。
+		// 不批量镜像这些图片，避免把"视频无直链"伪装成图文成功且污染 COS。
+		imgs = nil
 	}
 	mirroredImgs := mirrorImagesToCOS(ctx, userID, note.ID, imgs)
 	cover := note.CoverURL
@@ -239,12 +246,17 @@ func (e *Enricher) enrichOne(ctx context.Context, userID uint, note *model.XhsTo
 
 	// 2. 视频段：转写 +（transcribeVideo 内）把视频镜像到 COS，note.VideoURL 改写为 COS URL。
 	finalStatus := model.XhsEnrichDone
-	if note.NoteType == model.XhsNoteTypeVideo && note.VideoURL != "" {
-		outcome, err := e.transcribeVideo(ctx, userID, note)
-		if err != nil {
-			return fmt.Errorf("enrichOne: transcribe: %w", err)
+	if note.NoteType == model.XhsNoteTypeVideo {
+		if videoURLMissing {
+			finalStatus = model.XhsEnrichPartial
+			log.Warnw("xhs enrich video missing url, marking partial", "user_id", userID, "note_id", note.ID)
+		} else {
+			outcome, err := e.transcribeVideo(ctx, userID, note)
+			if err != nil {
+				return fmt.Errorf("enrichOne: transcribe: %w", err)
+			}
+			finalStatus = outcome.Status
 		}
-		finalStatus = outcome.Status
 	}
 
 	// 3. 写回：images/cover/video_url 全用镜像后的 COS 值（图文笔记 video_url 为空）。
