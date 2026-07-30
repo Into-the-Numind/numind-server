@@ -93,7 +93,7 @@ assert_file_contains "$DOCKERFILE" 'UBUNTU_MIRROR=https://mirrors\.aliyun\.com/u
   "runtime stage defaults to domestic Ubuntu mirror"
 assert_file_contains "$DOCKERFILE_ADMIN" 'DEBIAN_MIRROR=https://mirrors\.aliyun\.com/debian' \
   "admin builder stage defaults to domestic Debian mirror"
-assert_file_contains "$DOCKERFILE_ADMIN" 'UBUNTU_MIRROR=https://mirrors\.aliyun\.com/ubuntu' \
+assert_file_contains "$DOCKERFILE_ADMIN" 'UBUNTU_MIRROR=http://mirrors\.aliyun\.com/ubuntu' \
   "admin runtime stage defaults to domestic Ubuntu mirror"
 assert_file_contains "$DOCKERFILE" 'go build .*extldflags "-static".*\./cmd/numind-sandboxd' \
   "sandboxd is built static"
