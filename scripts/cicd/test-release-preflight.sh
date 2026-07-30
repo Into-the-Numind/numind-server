@@ -24,7 +24,8 @@ die() { echo "test setup error: $1" >&2; exit 2; }
 [ -f "$DOCKERIGNORE" ] || die ".dockerignore not found at $DOCKERIGNORE"
 
 TMP="$(mktemp -d)" || die "mktemp"
-trap 'rm -rf "$TMP"' EXIT
+SOCKET_TMP="$(mktemp -d /tmp/numind-sandbox-preflight.XXXXXX)" || die "mktemp socket tmp"
+trap 'rm -rf "$TMP" "$SOCKET_TMP"' EXIT
 
 mkdir -p "$TMP/bin" "$TMP/locks" || die "mkdir temp dirs"
 
@@ -452,6 +453,29 @@ DOCKER
 chmod +x "$DEPLOY_REMOTE_BIN/docker" || die "chmod fake deploy-remote docker"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$DEPLOY_REMOTE_BIN/curl" || die "write fake deploy-remote curl"
 chmod +x "$DEPLOY_REMOTE_BIN/curl" || die "chmod fake deploy-remote curl"
+cat > "$DEPLOY_REMOTE_BIN/sudo" <<'SUDO' || die "write fake deploy-remote sudo"
+#!/usr/bin/env bash
+case "${1:-}" in
+  mkdir|chown|chmod)
+    exit 0
+    ;;
+  *)
+    exec "$@"
+    ;;
+esac
+SUDO
+chmod +x "$DEPLOY_REMOTE_BIN/sudo" || die "chmod fake deploy-remote sudo"
+
+make_unix_socket() {
+  local socket_path="$1"
+  python3 - "$socket_path" <<'PY'
+import socket
+import sys
+s = socket.socket(socket.AF_UNIX)
+s.bind(sys.argv[1])
+s.close()
+PY
+}
 
 ADMIN_SECRETS_FILE="$TMP/admin-prod-secrets.env"
 printf 'NUMIND_FAKE_SECRET=\n' > "$ADMIN_SECRETS_FILE" || die "write fake admin secrets file"
@@ -462,6 +486,10 @@ ADMIN_DOCKER_RUN_LOG="$TMP/admin-docker-run.log"
   ENV=prod TARGET=admin IMAGE="example.invalid/numind-admin:prod-test" \
   SECRETS_FILE="$ADMIN_SECRETS_FILE" \
   REQUIRE_PROD_SECRETS_ENV=0 \
+  NUMIND_SANDBOX_BACKEND=broker \
+  NUMIND_SANDBOX_BROKER_SOCKET=/var/run/docker.sock \
+  NUMIND_SANDBOX_BROKER_OWNER_ID=admin-should-not-use \
+  NUMIND_SANDBOX_BROKER_GID=1999 \
     bash "$DEPLOY_REMOTE_SH"
 ) > "$TMP/admin-deploy-remote.out" 2>&1
 admin_deploy_remote_rc=$?
@@ -485,6 +513,127 @@ if grep -Fq "Secrets: $ADMIN_SECRETS_FILE (loaded)" "$TMP/admin-deploy-remote.ou
 else
   echo "FAIL: prod admin deploy output missing loaded secrets env-file"
   fail=1
+fi
+
+if grep -Fq -- "-e NUMIND_SANDBOX_BACKEND=disabled" "$ADMIN_DOCKER_RUN_LOG"; then
+  echo "PASS: prod admin docker run forces Sandbox disabled"
+else
+  echo "FAIL: prod admin docker run should force Sandbox disabled"
+  fail=1
+fi
+
+if grep -Eq -- 'docker\.sock|sandboxd\.sock|--group-add' "$ADMIN_DOCKER_RUN_LOG"; then
+  echo "FAIL: prod admin docker run must not mount broker/Docker socket or add Sandbox group"
+  fail=1
+else
+  echo "PASS: prod admin docker run has no broker/Docker socket or Sandbox group"
+fi
+
+SERVER_BROKER_SOCKET="$SOCKET_TMP/sandboxd.sock"
+make_unix_socket "$SERVER_BROKER_SOCKET" || die "create fake broker socket"
+SERVER_BROKER_SECRETS_FILE="$TMP/server-broker-prod-secrets.env"
+printf 'NUMIND_FAKE_SECRET=\n' > "$SERVER_BROKER_SECRETS_FILE" || die "write fake server broker secrets file"
+SERVER_BROKER_DOCKER_RUN_LOG="$TMP/server-broker-docker-run.log"
+(
+  PATH="$DEPLOY_REMOTE_BIN:$PATH" \
+  FAKE_DOCKER_RUN_LOG="$SERVER_BROKER_DOCKER_RUN_LOG" \
+  ENV=prod TARGET=server IMAGE="example.invalid/numind-server:broker-test" \
+  SECRETS_FILE="$SERVER_BROKER_SECRETS_FILE" \
+  REQUIRE_PROD_SECRETS_ENV=0 \
+  NUMIND_SANDBOX_BACKEND=broker \
+  NUMIND_SANDBOX_BROKER_SOCKET="$SERVER_BROKER_SOCKET" \
+  NUMIND_SANDBOX_BROKER_OWNER_ID=numind-user-api-primary \
+  NUMIND_SANDBOX_BROKER_GID=1999 \
+    bash "$DEPLOY_REMOTE_SH"
+) > "$TMP/server-broker-deploy-remote.out" 2>&1
+server_broker_deploy_rc=$?
+
+if [ "$server_broker_deploy_rc" -eq 0 ]; then
+  echo "PASS: prod server broker deploy-remote succeeds with fake docker"
+else
+  echo "FAIL: prod server broker deploy-remote should succeed with fake docker (rc=$server_broker_deploy_rc)"
+  fail=1
+fi
+
+if grep -Fq -- "-e NUMIND_SANDBOX_BACKEND=broker" "$SERVER_BROKER_DOCKER_RUN_LOG" &&
+   grep -Fq -- "-e NUMIND_SANDBOX_BROKER_SOCKET=$SERVER_BROKER_SOCKET" "$SERVER_BROKER_DOCKER_RUN_LOG" &&
+   grep -Fq -- "-e NUMIND_SANDBOX_BROKER_OWNER_ID=numind-user-api-primary" "$SERVER_BROKER_DOCKER_RUN_LOG"; then
+  echo "PASS: prod server broker docker run injects Sandbox broker env"
+else
+  echo "FAIL: prod server broker docker run missing broker env"
+  fail=1
+fi
+
+if grep -Fq -- "-v $SERVER_BROKER_SOCKET:$SERVER_BROKER_SOCKET" "$SERVER_BROKER_DOCKER_RUN_LOG" &&
+   grep -Fq -- "--group-add 1999" "$SERVER_BROKER_DOCKER_RUN_LOG"; then
+  echo "PASS: prod server broker docker run mounts only broker socket with dedicated group"
+else
+  echo "FAIL: prod server broker docker run missing broker socket mount or dedicated group"
+  fail=1
+fi
+
+if grep -Fq -- "docker.sock" "$SERVER_BROKER_DOCKER_RUN_LOG"; then
+  echo "FAIL: prod server broker docker run must not mount a Docker socket"
+  fail=1
+else
+  echo "PASS: prod server broker docker run has no Docker socket"
+fi
+
+SERVER_DISABLED_DOCKER_RUN_LOG="$TMP/server-disabled-docker-run.log"
+(
+  PATH="$DEPLOY_REMOTE_BIN:$PATH" \
+  FAKE_DOCKER_RUN_LOG="$SERVER_DISABLED_DOCKER_RUN_LOG" \
+  ENV=prod TARGET=server IMAGE="example.invalid/numind-server:disabled-test" \
+  SECRETS_FILE="$SERVER_BROKER_SECRETS_FILE" \
+  REQUIRE_PROD_SECRETS_ENV=0 \
+  NUMIND_SANDBOX_BACKEND=disabled \
+    bash "$DEPLOY_REMOTE_SH"
+) > "$TMP/server-disabled-deploy-remote.out" 2>&1
+server_disabled_deploy_rc=$?
+
+if [ "$server_disabled_deploy_rc" -eq 0 ]; then
+  echo "PASS: prod server disabled deploy-remote succeeds without broker socket"
+else
+  echo "FAIL: prod server disabled deploy-remote should succeed without broker socket (rc=$server_disabled_deploy_rc)"
+  fail=1
+fi
+
+if grep -Fq -- "-e NUMIND_SANDBOX_BACKEND=disabled" "$SERVER_DISABLED_DOCKER_RUN_LOG" &&
+   ! grep -Eq -- 'docker\.sock|sandboxd\.sock|--group-add' "$SERVER_DISABLED_DOCKER_RUN_LOG"; then
+  echo "PASS: prod server disabled docker run has no broker/Docker socket or Sandbox group"
+else
+  echo "FAIL: prod server disabled docker run should be Sandbox-disabled and socket-free"
+  fail=1
+fi
+
+SERVER_DOCKER_SOCKET_DOCKER_RUN_LOG="$TMP/server-docker-socket-docker-run.log"
+(
+  PATH="$DEPLOY_REMOTE_BIN:$PATH" \
+  FAKE_DOCKER_RUN_LOG="$SERVER_DOCKER_SOCKET_DOCKER_RUN_LOG" \
+  ENV=prod TARGET=server IMAGE="example.invalid/numind-server:dangerous-socket-test" \
+  SECRETS_FILE="$SERVER_BROKER_SECRETS_FILE" \
+  REQUIRE_PROD_SECRETS_ENV=0 \
+  NUMIND_SANDBOX_BACKEND=broker \
+  NUMIND_SANDBOX_BROKER_SOCKET=/var/run/docker.sock \
+  NUMIND_SANDBOX_BROKER_OWNER_ID=numind-user-api-primary \
+  NUMIND_SANDBOX_BROKER_GID=1999 \
+    bash "$DEPLOY_REMOTE_SH"
+) > "$TMP/server-docker-socket-deploy-remote.out" 2>&1
+server_docker_socket_deploy_rc=$?
+
+if [ "$server_docker_socket_deploy_rc" -ne 0 ] &&
+   grep -Fq "never a Docker socket" "$TMP/server-docker-socket-deploy-remote.out"; then
+  echo "PASS: prod server broker deploy rejects Docker socket path"
+else
+  echo "FAIL: prod server broker deploy should reject Docker socket path"
+  fail=1
+fi
+
+if grep -Eq '^pull( |$)|^run( |$)' "$SERVER_DOCKER_SOCKET_DOCKER_RUN_LOG" 2>/dev/null; then
+  echo "FAIL: prod server Docker-socket rejection should happen before docker pull/run"
+  fail=1
+else
+  echo "PASS: prod server Docker-socket rejection happens before docker pull/run"
 fi
 
 PROD_SECRETS_CONFIG="$TMP/prod-secrets-config.yaml"
@@ -726,6 +875,18 @@ if [ "$fail" -ne 0 ]; then
   cat "$TMP/admin-deploy-remote.out" 2>/dev/null || true
   echo "---- admin docker run log ----"
   cat "$ADMIN_DOCKER_RUN_LOG" 2>/dev/null || true
+  echo "---- server broker deploy-remote output ----"
+  cat "$TMP/server-broker-deploy-remote.out" 2>/dev/null || true
+  echo "---- server broker docker run log ----"
+  cat "$SERVER_BROKER_DOCKER_RUN_LOG" 2>/dev/null || true
+  echo "---- server disabled deploy-remote output ----"
+  cat "$TMP/server-disabled-deploy-remote.out" 2>/dev/null || true
+  echo "---- server disabled docker run log ----"
+  cat "$SERVER_DISABLED_DOCKER_RUN_LOG" 2>/dev/null || true
+  echo "---- server docker socket deploy-remote output ----"
+  cat "$TMP/server-docker-socket-deploy-remote.out" 2>/dev/null || true
+  echo "---- server docker socket docker run log ----"
+  cat "$SERVER_DOCKER_SOCKET_DOCKER_RUN_LOG" 2>/dev/null || true
   echo "---- prod secrets deploy-remote output ----"
   cat "$TMP/prod-secrets-deploy-remote.out" 2>/dev/null || true
   echo "---- missing prod secrets deploy-remote output ----"

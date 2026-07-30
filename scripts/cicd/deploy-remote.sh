@@ -12,6 +12,85 @@ set -euo pipefail
 : "${IMAGE:?IMAGE must be set}"
 
 EXTRA_RUN_FLAGS=""
+SANDBOX_ENV_FLAGS=""
+SANDBOX_INFO="not configured"
+
+fail_sandbox_contract() {
+  echo "ERROR: prod sandbox deploy contract violation: $1" >&2
+  exit 1
+}
+
+validate_sandbox_socket_path() {
+  local socket_path="$1"
+  case "$socket_path" in
+    /*) ;;
+    *) fail_sandbox_contract "NUMIND_SANDBOX_BROKER_SOCKET must be an absolute path" ;;
+  esac
+  if [[ "$socket_path" =~ [[:space:]:] ]]; then
+    fail_sandbox_contract "NUMIND_SANDBOX_BROKER_SOCKET contains whitespace or ':'"
+  fi
+  case "$socket_path" in
+    */docker.sock|/var/run/docker.sock|/run/docker.sock)
+      fail_sandbox_contract "server may mount sandboxd.sock only, never a Docker socket"
+      ;;
+  esac
+  if [ ! -S "$socket_path" ]; then
+    fail_sandbox_contract "broker socket not found at $socket_path; set NUMIND_SANDBOX_BACKEND=disabled to deploy without Sandbox"
+  fi
+}
+
+validate_sandbox_owner_id() {
+  local owner_id="$1"
+  if [ -z "$owner_id" ]; then
+    fail_sandbox_contract "NUMIND_SANDBOX_BROKER_OWNER_ID is required for broker backend"
+  fi
+  if ! [[ "$owner_id" =~ ^[A-Za-z0-9_.-]{3,64}$ ]]; then
+    fail_sandbox_contract "NUMIND_SANDBOX_BROKER_OWNER_ID must be 3-64 chars: letters, digits, '.', '_' or '-'"
+  fi
+}
+
+validate_sandbox_group_gid() {
+  local gid="$1"
+  if [ -z "$gid" ]; then
+    fail_sandbox_contract "NUMIND_SANDBOX_BROKER_GID is required for broker backend"
+  fi
+  if ! [[ "$gid" =~ ^[0-9]{1,10}$ ]]; then
+    fail_sandbox_contract "NUMIND_SANDBOX_BROKER_GID must be numeric"
+  fi
+}
+
+configure_prod_sandbox_contract() {
+  [ "$ENV" = "prod" ] || { SANDBOX_INFO="dev/qa legacy mode"; return 0; }
+
+  if [ "$TARGET" = "admin" ]; then
+    SANDBOX_ENV_FLAGS="-e NUMIND_SANDBOX_BACKEND=disabled"
+    SANDBOX_INFO="disabled (admin has no Sandbox broker/Docker access)"
+    return 0
+  fi
+
+  local backend="${NUMIND_SANDBOX_BACKEND:-disabled}"
+  case "$backend" in
+    disabled)
+      SANDBOX_ENV_FLAGS="-e NUMIND_SANDBOX_BACKEND=disabled"
+      SANDBOX_INFO="disabled"
+      ;;
+    broker)
+      local socket_path="${NUMIND_SANDBOX_BROKER_SOCKET:-/run/numind-sandbox/sandboxd.sock}"
+      local owner_id="${NUMIND_SANDBOX_BROKER_OWNER_ID:-}"
+      local broker_gid="${NUMIND_SANDBOX_BROKER_GID:-}"
+      validate_sandbox_socket_path "$socket_path"
+      validate_sandbox_owner_id "$owner_id"
+      validate_sandbox_group_gid "$broker_gid"
+      VOLUMES="$VOLUMES -v ${socket_path}:${socket_path}"
+      EXTRA_RUN_FLAGS="${EXTRA_RUN_FLAGS:+$EXTRA_RUN_FLAGS }--group-add ${broker_gid}"
+      SANDBOX_ENV_FLAGS="-e NUMIND_SANDBOX_BACKEND=broker -e NUMIND_SANDBOX_BROKER_SOCKET=${socket_path} -e NUMIND_SANDBOX_BROKER_OWNER_ID=${owner_id}"
+      SANDBOX_INFO="broker socket=${socket_path} owner=${owner_id} gid=${broker_gid}"
+      ;;
+    *)
+      fail_sandbox_contract "NUMIND_SANDBOX_BACKEND must be 'broker' or 'disabled' for prod server, got '$backend'"
+      ;;
+  esac
+}
 
 case "$TARGET" in
   server)
@@ -24,10 +103,9 @@ case "$TARGET" in
              -v /opt/numind/config/cert:/opt/numind/config/cert:ro \
              -v /etc/ssl/certimate/youshu.asia:/etc/ssl/certimate/youshu.asia:ro \
              -v /opt/numind/model/model_cache:/app/model_cache"
-    # agent-mode-sandbox-integration #4: dev mounts host /var/run/docker.sock so
-    # the server container can drive the host docker daemon (DooD). prod does NOT
-    # mount it — sandbox.backend stays disabled in prod and no docker access is
-    # available to the binary.
+    # Dev mounts host /var/run/docker.sock so the server container can drive the
+    # host docker daemon (DooD). Prod never mounts a Docker socket; when Sandbox
+    # is enabled, prod server gets only the constrained sandboxd Unix socket.
     EXTRA_RUN_FLAGS=""
     if [ "$ENV" = "dev" ]; then
       VOLUMES="$VOLUMES -v /var/run/docker.sock:/var/run/docker.sock"
@@ -59,6 +137,7 @@ case "$TARGET" in
 esac
 
 HEALTH_URL="http://localhost:${HEALTH_PORT}${HEALTH_PATH}"
+configure_prod_sandbox_contract
 
 # Runtime secrets file at /opt/numind/<env>/secrets.env for server/admin.
 # Format: KEY=value per line, no quotes. Used to inject runtime secrets that
@@ -121,6 +200,7 @@ echo "  Image  : $IMAGE"
 echo "  Env    : $ENV"
 echo "  Health : $HEALTH_URL"
 echo "  Secrets: $SECRETS_INFO"
+echo "  Sandbox: $SANDBOX_INFO"
 echo "==============================================="
 
 validate_prod_secrets_file
@@ -161,6 +241,7 @@ start_container() {
     $PORTS \
     -e "APP_ENV=${ENV}" \
     $ENV_FILE_FLAG \
+    $SANDBOX_ENV_FLAGS \
     $VOLUMES \
     $EXTRA_RUN_FLAGS \
     --log-driver json-file \
