@@ -10,9 +10,14 @@ const (
 	mebibyte int64 = 1024 * 1024
 	gibibyte int64 = 1024 * mebibyte
 
-	capacityHistoricalMinimum = 7 * 24 * time.Hour
-	capacityFreshMinimum      = 72 * time.Hour
-	capacityMaximumSampleGap  = time.Hour
+	capacityHistoricalMinimum  = 7 * 24 * time.Hour
+	capacityFreshMinimum       = 72 * time.Hour
+	capacityMaximumSampleGap   = time.Hour
+	capacityMaximumBusinessGap = 24 * time.Hour
+	capacityMaximumEvidenceAge = time.Hour
+	capacityMaximumFutureSkew  = 5 * time.Minute
+	capacityBusinessDivisor    = 6
+	capacityMaximumSamples     = 1_000_000
 
 	capacityParentPOCMax       = 11 * gibibyte / 4
 	capacityCoreReserve        = 5 * gibibyte / 4
@@ -56,8 +61,9 @@ type CapacitySample struct {
 
 // CapacityEvidence is the complete bounded input to the production formula.
 type CapacityEvidence struct {
-	Mode    CapacityEvidenceMode
-	Samples []CapacitySample
+	Mode        CapacityEvidenceMode
+	EvaluatedAt time.Time
+	Samples     []CapacitySample
 }
 
 // CapacityPlan is the exact set of values later written to systemd units.
@@ -77,6 +83,7 @@ type CapacityPlan struct {
 	ControlHighBytes      int64
 	ControlMaxBytes       int64
 	ParentHeadroomBytes   int64
+	ready                 bool
 }
 
 // CalculateSandboxCapacity validates evidence and derives all production
@@ -84,7 +91,10 @@ type CapacityPlan struct {
 // release report can explain a low-capacity block without enabling traffic.
 func CalculateSandboxCapacity(evidence CapacityEvidence) (CapacityPlan, error) {
 	minimumDuration, ok := capacityMinimumDuration(evidence.Mode)
-	if !ok || len(evidence.Samples) < 2 {
+	if !ok ||
+		evidence.EvaluatedAt.IsZero() ||
+		len(evidence.Samples) < 2 ||
+		len(evidence.Samples) > capacityMaximumSamples {
 		return CapacityPlan{}, ErrCapacityEvidenceInvalid
 	}
 	samples := append([]CapacitySample(nil), evidence.Samples...)
@@ -92,10 +102,14 @@ func CalculateSandboxCapacity(evidence CapacityEvidence) (CapacityPlan, error) {
 		return samples[left].ObservedAt.Before(samples[right].ObservedAt)
 	})
 	businessValues := make([]int64, 0, len(samples))
+	businessTimes := make([]time.Time, 0, len(samples))
 	for index, sample := range samples {
 		if sample.ObservedAt.IsZero() ||
 			sample.MemAvailableBytes <= 0 ||
-			sample.MemAvailableBytes > capacitySampleMaximum {
+			sample.MemAvailableBytes > capacitySampleMaximum ||
+			sample.ObservedAt.After(
+				evidence.EvaluatedAt.Add(capacityMaximumFutureSkew),
+			) {
 			return CapacityPlan{}, ErrCapacityEvidenceInvalid
 		}
 		if index > 0 &&
@@ -112,10 +126,21 @@ func CalculateSandboxCapacity(evidence CapacityEvidence) (CapacityPlan, error) {
 				businessValues,
 				sample.MemAvailableBytes,
 			)
+			businessTimes = append(businessTimes, sample.ObservedAt)
 		}
 	}
 	duration := samples[len(samples)-1].ObservedAt.Sub(samples[0].ObservedAt)
-	if duration < minimumDuration || len(businessValues) < 2 {
+	if evidence.EvaluatedAt.Sub(samples[len(samples)-1].ObservedAt) >
+		capacityMaximumEvidenceAge {
+		return CapacityPlan{}, ErrCapacityEvidenceInsufficient
+	}
+	if duration < minimumDuration ||
+		len(businessValues)*capacityBusinessDivisor < len(samples) ||
+		!businessEvidenceCoversWindow(
+			samples[0].ObservedAt,
+			samples[len(samples)-1].ObservedAt,
+			businessTimes,
+		) {
 		return CapacityPlan{}, ErrCapacityEvidenceInsufficient
 	}
 
@@ -157,11 +182,15 @@ func CalculateSandboxCapacity(evidence CapacityEvidence) (CapacityPlan, error) {
 		workloadMax < capacityWorkloadMinimum {
 		return plan, ErrCapacityInsufficient
 	}
+	plan.ready = true
 	return plan, nil
 }
 
 // SystemdValues returns only fixed low-cardinality byte ceilings.
-func (p CapacityPlan) SystemdValues() map[string]int64 {
+func (p CapacityPlan) SystemdValues() (map[string]int64, error) {
+	if !validReadyCapacityPlan(p) {
+		return nil, ErrCapacityInsufficient
+	}
 	return map[string]int64{
 		"NUMIND_SANDBOX_PARENT_MEMORY_MAX_BYTES":        p.ParentMaxBytes,
 		"NUMIND_SANDBOX_WORKLOAD_MEMORY_MAX_BYTES":      p.WorkloadMaxBytes,
@@ -171,7 +200,29 @@ func (p CapacityPlan) SystemdValues() map[string]int64 {
 		"NUMIND_SANDBOX_CONTROL_MEMORY_HIGH_BYTES":      p.ControlHighBytes,
 		"NUMIND_SANDBOX_CONTROL_MEMORY_MAX_BYTES":       p.ControlMaxBytes,
 		"NUMIND_SANDBOX_PARENT_HEADROOM_BYTES":          p.ParentHeadroomBytes,
+	}, nil
+}
+
+func validReadyCapacityPlan(plan CapacityPlan) bool {
+	expectedWorkload := plan.ParentMaxBytes -
+		capacityControlReserve -
+		capacityParentHeadroom
+	expectedHigh := expectedWorkload * 90 / 100
+	if expectedHigh > capacityWorkloadHighMax {
+		expectedHigh = capacityWorkloadHighMax
 	}
+	return plan.ready &&
+		plan.ParentMaxBytes >= capacityParentMinimum &&
+		plan.ParentMaxBytes <= capacityParentPOCMax &&
+		plan.ParentMaxBytes%capacityParentFloorQuantum == 0 &&
+		expectedWorkload >= capacityWorkloadMinimum &&
+		plan.WorkloadMaxBytes == expectedWorkload &&
+		plan.WorkloadHighBytes == expectedHigh &&
+		plan.WorkloadRecoveryBytes == expectedWorkload*80/100 &&
+		plan.WorkloadShedBytes == expectedWorkload*96/100 &&
+		plan.ControlHighBytes == capacityControlHigh &&
+		plan.ControlMaxBytes == capacityControlReserve &&
+		plan.ParentHeadroomBytes == capacityParentHeadroom
 }
 
 func capacityMinimumDuration(
@@ -197,6 +248,26 @@ func memAvailableP1(values []int64) int64 {
 	})
 	rank := (len(sorted) + 99) / 100
 	return sorted[rank-1]
+}
+
+func businessEvidenceCoversWindow(
+	start time.Time,
+	end time.Time,
+	businessTimes []time.Time,
+) bool {
+	if len(businessTimes) < 2 ||
+		businessTimes[0].Sub(start) > capacityMaximumBusinessGap ||
+		end.Sub(businessTimes[len(businessTimes)-1]) >
+			capacityMaximumBusinessGap {
+		return false
+	}
+	for index := 1; index < len(businessTimes); index++ {
+		if businessTimes[index].Sub(businessTimes[index-1]) >
+			capacityMaximumBusinessGap {
+			return false
+		}
+	}
+	return true
 }
 
 func floorBytes(value int64, quantum int64) int64 {

@@ -18,11 +18,13 @@ func TestCapacityP1UsesNearestRankOnBusinessSamples(t *testing.T) {
 
 func TestCapacityFormulaCapsFloorsAndDerivesThresholds(t *testing.T) {
 	start := time.Date(2026, 7, 20, 0, 0, 0, 0, time.UTC)
+	end := start.Add(7 * 24 * time.Hour)
 	plan, err := CalculateSandboxCapacity(CapacityEvidence{
-		Mode: CapacityEvidenceHistorical,
+		Mode:        CapacityEvidenceHistorical,
+		EvaluatedAt: end,
 		Samples: capacitySamples(
 			start,
-			start.Add(7*24*time.Hour),
+			end,
 			169,
 			8*gibibyte,
 		),
@@ -55,11 +57,13 @@ func TestCapacityFormulaCapsFloorsAndDerivesThresholds(t *testing.T) {
 
 func TestCapacityFormulaUsesObservedBaselineBelowPOCCap(t *testing.T) {
 	start := time.Date(2026, 7, 20, 0, 0, 0, 0, time.UTC)
+	end := start.Add(72 * time.Hour)
 	plan, err := CalculateSandboxCapacity(CapacityEvidence{
-		Mode: CapacityEvidenceFreshSampling,
+		Mode:        CapacityEvidenceFreshSampling,
+		EvaluatedAt: end,
 		Samples: capacitySamples(
 			start,
-			start.Add(72*time.Hour),
+			end,
 			73,
 			7*gibibyte/2,
 		),
@@ -80,55 +84,100 @@ func TestCapacityFormulaUsesObservedBaselineBelowPOCCap(t *testing.T) {
 
 func TestCapacityBlocksInsufficientEvidenceAndMemory(t *testing.T) {
 	start := time.Date(2026, 7, 20, 0, 0, 0, 0, time.UTC)
+	end := start.Add(7 * 24 * time.Hour)
+	cherryPickedBusiness := capacitySamples(
+		start,
+		end,
+		169,
+		8*gibibyte,
+	)
+	for index := range cherryPickedBusiness {
+		cherryPickedBusiness[index].BusinessWindow = false
+	}
+	cherryPickedBusiness[0].BusinessWindow = true
+	cherryPickedBusiness[len(cherryPickedBusiness)-1].BusinessWindow = true
 	tests := []struct {
 		name     string
 		evidence CapacityEvidence
 		wantErr  error
 	}{
 		{
+			name: "business window cannot cherry pick two samples",
+			evidence: CapacityEvidence{
+				Mode:        CapacityEvidenceHistorical,
+				EvaluatedAt: end,
+				Samples:     cherryPickedBusiness,
+			},
+			wantErr: ErrCapacityEvidenceInsufficient,
+		},
+		{
+			name: "evidence is stale at release time",
+			evidence: CapacityEvidence{
+				Mode:        CapacityEvidenceHistorical,
+				EvaluatedAt: end.Add(time.Hour + time.Second),
+				Samples:     capacitySamples(start, end, 169, 8*gibibyte),
+			},
+			wantErr: ErrCapacityEvidenceInsufficient,
+		},
+		{
+			name: "evidence is too far in the future",
+			evidence: CapacityEvidence{
+				Mode:        CapacityEvidenceHistorical,
+				EvaluatedAt: end.Add(-capacityMaximumFutureSkew - time.Second),
+				Samples:     capacitySamples(start, end, 169, 8*gibibyte),
+			},
+			wantErr: ErrCapacityEvidenceInvalid,
+		},
+		{
 			name: "historical shorter than seven days",
 			evidence: CapacityEvidence{
-				Mode:    CapacityEvidenceHistorical,
-				Samples: capacitySamples(start, start.Add(7*24*time.Hour-time.Second), 169, 8*gibibyte),
+				Mode:        CapacityEvidenceHistorical,
+				EvaluatedAt: start.Add(7*24*time.Hour - time.Second),
+				Samples:     capacitySamples(start, start.Add(7*24*time.Hour-time.Second), 169, 8*gibibyte),
 			},
 			wantErr: ErrCapacityEvidenceInsufficient,
 		},
 		{
 			name: "fresh sampling shorter than seventy two hours",
 			evidence: CapacityEvidence{
-				Mode:    CapacityEvidenceFreshSampling,
-				Samples: capacitySamples(start, start.Add(72*time.Hour-time.Second), 73, 8*gibibyte),
+				Mode:        CapacityEvidenceFreshSampling,
+				EvaluatedAt: start.Add(72*time.Hour - time.Second),
+				Samples:     capacitySamples(start, start.Add(72*time.Hour-time.Second), 73, 8*gibibyte),
 			},
 			wantErr: ErrCapacityEvidenceInsufficient,
 		},
 		{
 			name: "historical mode cannot claim only seventy two hours",
 			evidence: CapacityEvidence{
-				Mode:    CapacityEvidenceHistorical,
-				Samples: capacitySamples(start, start.Add(72*time.Hour), 73, 8*gibibyte),
+				Mode:        CapacityEvidenceHistorical,
+				EvaluatedAt: start.Add(72 * time.Hour),
+				Samples:     capacitySamples(start, start.Add(72*time.Hour), 73, 8*gibibyte),
 			},
 			wantErr: ErrCapacityEvidenceInsufficient,
 		},
 		{
 			name: "machine leaves less than two GiB parent",
 			evidence: CapacityEvidence{
-				Mode:    CapacityEvidenceHistorical,
-				Samples: capacitySamples(start, start.Add(7*24*time.Hour), 169, 3*gibibyte),
+				Mode:        CapacityEvidenceHistorical,
+				EvaluatedAt: start.Add(7 * 24 * time.Hour),
+				Samples:     capacitySamples(start, start.Add(7*24*time.Hour), 169, 3*gibibyte),
 			},
 			wantErr: ErrCapacityInsufficient,
 		},
 		{
 			name: "sample gap larger than one hour",
 			evidence: CapacityEvidence{
-				Mode:    CapacityEvidenceHistorical,
-				Samples: capacitySamples(start, start.Add(7*24*time.Hour), 168, 8*gibibyte),
+				Mode:        CapacityEvidenceHistorical,
+				EvaluatedAt: start.Add(7 * 24 * time.Hour),
+				Samples:     capacitySamples(start, start.Add(7*24*time.Hour), 168, 8*gibibyte),
 			},
 			wantErr: ErrCapacityEvidenceInsufficient,
 		},
 		{
 			name: "no business-window samples",
 			evidence: CapacityEvidence{
-				Mode: CapacityEvidenceHistorical,
+				Mode:        CapacityEvidenceHistorical,
+				EvaluatedAt: start.Add(7 * 24 * time.Hour),
 				Samples: []CapacitySample{
 					{ObservedAt: start, MemAvailableBytes: 8 * gibibyte},
 					{ObservedAt: start.Add(7 * 24 * time.Hour), MemAvailableBytes: 8 * gibibyte},
@@ -139,15 +188,17 @@ func TestCapacityBlocksInsufficientEvidenceAndMemory(t *testing.T) {
 		{
 			name: "unknown evidence mode",
 			evidence: CapacityEvidence{
-				Mode:    "guess",
-				Samples: capacitySamples(start, start.Add(7*24*time.Hour), 169, 8*gibibyte),
+				Mode:        "guess",
+				EvaluatedAt: start.Add(7 * 24 * time.Hour),
+				Samples:     capacitySamples(start, start.Add(7*24*time.Hour), 169, 8*gibibyte),
 			},
 			wantErr: ErrCapacityEvidenceInvalid,
 		},
 		{
 			name: "duplicate timestamp",
 			evidence: CapacityEvidence{
-				Mode: CapacityEvidenceHistorical,
+				Mode:        CapacityEvidenceHistorical,
+				EvaluatedAt: start,
 				Samples: []CapacitySample{
 					{ObservedAt: start, MemAvailableBytes: 8 * gibibyte, BusinessWindow: true},
 					{ObservedAt: start, MemAvailableBytes: 8 * gibibyte, BusinessWindow: true},
@@ -158,7 +209,8 @@ func TestCapacityBlocksInsufficientEvidenceAndMemory(t *testing.T) {
 		{
 			name: "nonpositive memory sample",
 			evidence: CapacityEvidence{
-				Mode: CapacityEvidenceHistorical,
+				Mode:        CapacityEvidenceHistorical,
+				EvaluatedAt: start.Add(7 * 24 * time.Hour),
 				Samples: []CapacitySample{
 					{ObservedAt: start, MemAvailableBytes: 0, BusinessWindow: true},
 					{ObservedAt: start.Add(7 * 24 * time.Hour), MemAvailableBytes: 8 * gibibyte, BusinessWindow: true},
@@ -177,13 +229,59 @@ func TestCapacityBlocksInsufficientEvidenceAndMemory(t *testing.T) {
 	}
 }
 
+func TestCapacityExportsSystemdValuesOnlyForReadyPlan(t *testing.T) {
+	start := time.Date(2026, 7, 20, 0, 0, 0, 0, time.UTC)
+	end := start.Add(7 * 24 * time.Hour)
+	ready, err := CalculateSandboxCapacity(CapacityEvidence{
+		Mode:        CapacityEvidenceHistorical,
+		EvaluatedAt: end,
+		Samples:     capacitySamples(start, end, 169, 8*gibibyte),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	values, err := ready.SystemdValues()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if values["NUMIND_SANDBOX_PARENT_MEMORY_MAX_BYTES"] !=
+		ready.ParentMaxBytes {
+		t.Fatalf("systemd values = %#v", values)
+	}
+	tampered := ready
+	tampered.ParentMaxBytes = capacityParentPOCMax + capacityParentFloorQuantum
+	if values, err := tampered.SystemdValues(); values != nil ||
+		!errors.Is(err, ErrCapacityInsufficient) {
+		t.Fatalf("tampered export values=%#v error=%v", values, err)
+	}
+
+	blocked, err := CalculateSandboxCapacity(CapacityEvidence{
+		Mode:        CapacityEvidenceHistorical,
+		EvaluatedAt: end,
+		Samples:     capacitySamples(start, end, 169, 3*gibibyte),
+	})
+	if !errors.Is(err, ErrCapacityInsufficient) {
+		t.Fatalf("blocked calculation error = %v", err)
+	}
+	if values, err := blocked.SystemdValues(); values != nil ||
+		!errors.Is(err, ErrCapacityInsufficient) {
+		t.Fatalf("blocked export values=%#v error=%v", values, err)
+	}
+	if values, err := (CapacityPlan{}).SystemdValues(); values != nil ||
+		!errors.Is(err, ErrCapacityInsufficient) {
+		t.Fatalf("zero export values=%#v error=%v", values, err)
+	}
+}
+
 func TestCapacityAcceptsExactMinimumParentAndWorkload(t *testing.T) {
 	start := time.Date(2026, 7, 20, 0, 0, 0, 0, time.UTC)
+	end := start.Add(7 * 24 * time.Hour)
 	plan, err := CalculateSandboxCapacity(CapacityEvidence{
-		Mode: CapacityEvidenceHistorical,
+		Mode:        CapacityEvidenceHistorical,
+		EvaluatedAt: end,
 		Samples: capacitySamples(
 			start,
-			start.Add(7*24*time.Hour),
+			end,
 			169,
 			13*gibibyte/4,
 		),

@@ -29,11 +29,14 @@ done
 [[ "$MODE" == "historical" || "$MODE" == "fresh" ]] || usage
 [[ -n "$SAMPLES" && -f "$SAMPLES" && ! -L "$SAMPLES" ]] || usage
 
-exec python3 - "$MODE" "$SAMPLES" <<'PY'
+exec python3 -I - "$MODE" "$SAMPLES" <<'PY'
 import csv
+import io
 import json
-import math
+import os
+import stat
 import sys
+import time
 
 MIB = 1024**2
 GIB = 1024**3
@@ -49,6 +52,10 @@ FLOOR_QUANTUM = 64 * MIB
 SAMPLE_MAXIMUM = 1 << 60
 MAX_SAMPLES = 1_000_000
 MAX_SAMPLE_GAP_SECONDS = 60 * 60
+MAX_BUSINESS_GAP_SECONDS = 24 * 60 * 60
+MAX_EVIDENCE_AGE_SECONDS = 60 * 60
+MAX_FUTURE_SKEW_SECONDS = 5 * 60
+BUSINESS_DIVISOR = 6
 MINIMUM_SECONDS = {
     "historical": 7 * 24 * 60 * 60,
     "fresh": 72 * 60 * 60,
@@ -81,9 +88,21 @@ def blocked(reason, summary, **values):
 mode = sys.argv[1]
 sample_path = sys.argv[2]
 samples = []
+source = None
 try:
-    with open(sample_path, newline="", encoding="utf-8") as source:
-        reader = csv.reader(source)
+    flags = os.O_RDONLY | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(sample_path, flags)
+    file_stat = os.fstat(descriptor)
+    if not stat.S_ISREG(file_stat.st_mode) or file_stat.st_nlink != 1:
+        os.close(descriptor)
+        raise ValueError("evidence is not one regular file")
+    source = io.TextIOWrapper(
+        os.fdopen(descriptor, "rb", closefd=True),
+        encoding="utf-8",
+        newline="",
+    )
+    with source:
+        reader = csv.reader(source, strict=True)
         if next(reader, None) != HEADER:
             blocked(
                 "invalid_evidence",
@@ -114,6 +133,7 @@ if len(samples) < 2:
         "Capacity evidence must contain at least two samples.",
     )
 samples.sort(key=lambda sample: sample[0])
+evaluated_at = int(time.time())
 if any(
     current[0] <= previous[0]
     for previous, current in zip(samples, samples[1:])
@@ -132,12 +152,40 @@ if any(
         evidence_mode=mode,
         total_samples=len(samples),
     )
+if samples[-1][0] > evaluated_at + MAX_FUTURE_SKEW_SECONDS:
+    blocked(
+        "invalid_evidence",
+        "Capacity evidence contains a sample too far in the future.",
+    )
+if evaluated_at - samples[-1][0] > MAX_EVIDENCE_AGE_SECONDS:
+    blocked(
+        "insufficient_evidence",
+        "Release blocked: capacity evidence is stale.",
+        evidence_mode=mode,
+        evidence_end_epoch=samples[-1][0],
+        evaluated_at_epoch=evaluated_at,
+    )
 
 duration = samples[-1][0] - samples[0][0]
-business_values = sorted(
-    sample[1] for sample in samples if sample[2]
+business_samples = [sample for sample in samples if sample[2]]
+business_values = sorted(sample[1] for sample in business_samples)
+business_covers_window = (
+    len(business_samples) >= 2
+    and business_samples[0][0] - samples[0][0] <= MAX_BUSINESS_GAP_SECONDS
+    and samples[-1][0] - business_samples[-1][0] <= MAX_BUSINESS_GAP_SECONDS
+    and all(
+        current[0] - previous[0] <= MAX_BUSINESS_GAP_SECONDS
+        for previous, current in zip(
+            business_samples,
+            business_samples[1:],
+        )
+    )
 )
-if duration < MINIMUM_SECONDS[mode] or len(business_values) < 2:
+if (
+    duration < MINIMUM_SECONDS[mode]
+    or len(business_values) * BUSINESS_DIVISOR < len(samples)
+    or not business_covers_window
+):
     blocked(
         "insufficient_evidence",
         "Release blocked: the required evidence window or business-period samples are incomplete.",
@@ -147,7 +195,7 @@ if duration < MINIMUM_SECONDS[mode] or len(business_values) < 2:
         business_samples=len(business_values),
     )
 
-rank = math.ceil(len(business_values) * 0.01)
+rank = (len(business_values) + 99) // 100
 baseline = business_values[rank - 1]
 parent_candidate = min(PARENT_POC_MAX, max(0, baseline - CORE_RESERVE))
 parent_max = parent_candidate // FLOOR_QUANTUM * FLOOR_QUANTUM
@@ -176,6 +224,13 @@ result = {
     "control_memory_max_bytes": CONTROL_RESERVE,
     "parent_headroom_bytes": PARENT_HEADROOM,
 }
+if parent_max < PARENT_MINIMUM or workload_max < WORKLOAD_MINIMUM:
+    blocked(
+        "insufficient_capacity",
+        "Release blocked: this host cannot preserve the required core-service memory reserve.",
+        **result,
+    )
+
 result["systemd"] = {
     "NUMIND_SANDBOX_PARENT_MEMORY_MAX_BYTES": result["parent_memory_max_bytes"],
     "NUMIND_SANDBOX_WORKLOAD_MEMORY_MAX_BYTES": result["workload_memory_max_bytes"],
@@ -186,13 +241,6 @@ result["systemd"] = {
     "NUMIND_SANDBOX_CONTROL_MEMORY_MAX_BYTES": result["control_memory_max_bytes"],
     "NUMIND_SANDBOX_PARENT_HEADROOM_BYTES": result["parent_headroom_bytes"],
 }
-if parent_max < PARENT_MINIMUM or workload_max < WORKLOAD_MINIMUM:
-    blocked(
-        "insufficient_capacity",
-        "Release blocked: this host cannot preserve the required core-service memory reserve.",
-        **result,
-    )
-
 emit(
     {
         "status": "ready",
