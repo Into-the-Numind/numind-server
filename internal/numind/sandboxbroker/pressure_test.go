@@ -208,19 +208,6 @@ func TestPressureWorkloadShedProtectsStablePersistingWindow(
 			Leases:                []PressureLease{lease},
 		})
 	}
-	if decision.ShedLeaseID != "" {
-		t.Fatalf("persisting lease shed before receipt grace: %#v", decision)
-	}
-	for index := pressureConsecutiveSamples; index <= 5; index++ {
-		decision = observePressureAt(t, controller, clock, PressureSample{
-			ObservedAt: next.Add(
-				time.Duration(index) * PressureSampleInterval,
-			),
-			WorkloadMemoryBytes:   plan.WorkloadShedBytes,
-			HostMemAvailableBytes: 2 * gibibyte,
-			Leases:                []PressureLease{lease},
-		})
-	}
 	if decision.ShedLeaseID != "lease-persisting" {
 		t.Fatalf("expired receipt grace decision=%#v", decision)
 	}
@@ -237,6 +224,69 @@ func TestPressureWorkloadShedProtectsStablePersistingWindow(
 	if !errors.Is(err, ErrInvalidPressureSample) ||
 		decision.AdmissionAllowed {
 		t.Fatalf("shifted lifecycle decision=%#v error=%v", decision, err)
+	}
+}
+
+func TestPressureShedRetrySurvivesLeaseOmission(t *testing.T) {
+	plan := readyCapacityPlanForRuntime(t)
+	start := time.Date(2026, 7, 30, 0, 0, 0, 0, time.UTC)
+	controller, clock, next := readyPressureControllerForTest(
+		t,
+		plan,
+		start,
+	)
+	lease := PressureLease{
+		LeaseID:   "lease-active",
+		State:     LeaseActive,
+		StartedAt: start.Add(-time.Minute),
+	}
+	first := observePressureAt(t, controller, clock, PressureSample{
+		ObservedAt:            next,
+		WorkloadMemoryBytes:   0,
+		HostMemAvailableBytes: 0,
+		Leases:                []PressureLease{lease},
+	})
+	if first.ShedLeaseID != lease.LeaseID {
+		t.Fatalf("first emergency decision=%#v", first)
+	}
+	observePressureAt(t, controller, clock, PressureSample{
+		ObservedAt:            next.Add(PressureSampleInterval),
+		WorkloadMemoryBytes:   0,
+		HostMemAvailableBytes: 0,
+	})
+	reappeared := observePressureAt(t, controller, clock, PressureSample{
+		ObservedAt:            next.Add(2 * PressureSampleInterval),
+		WorkloadMemoryBytes:   0,
+		HostMemAvailableBytes: 0,
+		Leases:                []PressureLease{lease},
+	})
+	if reappeared.ShedLeaseID != "" {
+		t.Fatalf("omission reset shed retry: %#v", reappeared)
+	}
+}
+
+func TestPressureFirstObservationHonorsElapsedPersistence(t *testing.T) {
+	plan := readyCapacityPlanForRuntime(t)
+	start := time.Date(2026, 7, 30, 0, 0, 0, 0, time.UTC)
+	controller, clock, next := readyPressureControllerForTest(
+		t,
+		plan,
+		start,
+	)
+	lease := PressureLease{
+		LeaseID:         "lease-old-persisting",
+		State:           LeaseOutputPersisting,
+		StartedAt:       start.Add(-time.Minute),
+		PersistingSince: next.Add(-PressurePersistingGrace),
+	}
+	decision := observePressureAt(t, controller, clock, PressureSample{
+		ObservedAt:            next,
+		WorkloadMemoryBytes:   0,
+		HostMemAvailableBytes: 0,
+		Leases:                []PressureLease{lease},
+	})
+	if decision.ShedLeaseID != lease.LeaseID {
+		t.Fatalf("elapsed persistence received extra grace: %#v", decision)
 	}
 }
 

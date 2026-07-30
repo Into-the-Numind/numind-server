@@ -496,6 +496,33 @@ func TestJournalRPCServiceDoesNotSpawnWhileAdmissionIsClosed(
 	}
 }
 
+func TestActivationLockIsPerLeaseAndContextCancellable(t *testing.T) {
+	var locks activationLockSet
+	unlockFirst, err := locks.Lock(context.Background(), "lease-first")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlockFirst()
+
+	unlockOther, err := locks.Lock(context.Background(), "lease-other")
+	if err != nil {
+		t.Fatalf("different lease was globally blocked: %v", err)
+	}
+	unlockOther()
+
+	waitContext, cancelWait := context.WithTimeout(
+		context.Background(),
+		20*time.Millisecond,
+	)
+	defer cancelWait()
+	if _, err := locks.Lock(
+		waitContext,
+		"lease-first",
+	); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("same-lease wait error=%v", err)
+	}
+}
+
 func waitForSocketPath(t *testing.T, path string) {
 	t.Helper()
 	deadline := time.Now().Add(time.Second)

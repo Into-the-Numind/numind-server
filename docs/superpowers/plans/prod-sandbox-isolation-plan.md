@@ -236,6 +236,8 @@ T1..T17 ───────────────────────> T
 - 准入状态在FIFO真正获得slot时原子重检；已排队任务在门关闭后不得spawn，
   恢复后重新检查再按原顺序放行。
 - Ready/warm lease激活同样在发布Active前原子门禁；关闭时保留Ready。
+- activation只按同一lease串行且等待可被context取消，不让一个卡住的lease阻塞
+  其他四个任务槽。
 - 新请求在写journal前先做只读replay查询和准入预检，slot grant仍二次检查；
   并发readiness同步串行发布，旧快照不能覆盖新快照。
 - 采样中断/无效样本映射503；真实内存压力映射429。

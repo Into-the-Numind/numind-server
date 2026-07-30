@@ -77,15 +77,20 @@ type ReadinessSource interface {
 }
 
 type readinessAdmissionGate interface {
-	AdmissionStatus() (bool, PressureReason)
+	AdmissionStatus() (bool, PressureReason, uint64)
+	PublishAdmissionIfCurrent(
+		uint64,
+		func(bool, PressureReason),
+	) bool
 }
 
 // ReadinessResult contains only bounded reason codes.
 type ReadinessResult struct {
-	Ready          bool
-	PressureReason PressureReason
-	Alerts         []ReadinessCode
-	Failures       []ReadinessCode
+	Ready              bool
+	PressureReason     PressureReason
+	PressureGeneration uint64
+	Alerts             []ReadinessCode
+	Failures           []ReadinessCode
 }
 
 // ReadinessChecker compares actual infrastructure with sealed expected values.
@@ -220,8 +225,10 @@ func (c *ReadinessChecker) Check(
 	if snapshot.ImageDigest != c.config.ImageDigest {
 		addReadinessCode(&result.Failures, ReadinessImageMismatch)
 	}
-	pressureAllowed, pressureReason := c.pressure.AdmissionStatus()
+	pressureAllowed, pressureReason, pressureGeneration :=
+		c.pressure.AdmissionStatus()
 	result.PressureReason = pressureReason
+	result.PressureGeneration = pressureGeneration
 	if !pressureAllowed {
 		addReadinessCode(&result.Failures, ReadinessPressureBlocked)
 	}
@@ -232,6 +239,13 @@ func (c *ReadinessChecker) Check(
 // RequireAdmission is the CreateLease gate used by the T10 composition root.
 func (c *ReadinessChecker) RequireAdmission(ctx context.Context) error {
 	result, err := c.Check(ctx)
+	return readinessAdmissionError(result, err)
+}
+
+func readinessAdmissionError(
+	result ReadinessResult,
+	err error,
+) error {
 	if err != nil {
 		return err
 	}
@@ -257,12 +271,25 @@ func (c *ReadinessChecker) SyncAdmission(
 	}
 	c.syncMu.Lock()
 	defer c.syncMu.Unlock()
-	err := c.RequireAdmission(ctx)
+	result, checkErr := c.Check(ctx)
+	err := readinessAdmissionError(result, checkErr)
 	if err != nil {
 		scheduler.SetAdmission(false, err)
 		return err
 	}
-	scheduler.SetAdmission(true, nil)
+	if !c.pressure.PublishAdmissionIfCurrent(
+		result.PressureGeneration,
+		func(allowed bool, _ PressureReason) {
+			if allowed {
+				scheduler.SetAdmission(true, nil)
+				return
+			}
+			scheduler.SetAdmission(false, ErrReadinessUnavailable)
+		},
+	) {
+		scheduler.SetAdmission(false, ErrReadinessUnavailable)
+		return ErrReadinessUnavailable
+	}
 	return nil
 }
 

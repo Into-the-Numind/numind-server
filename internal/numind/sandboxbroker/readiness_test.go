@@ -381,9 +381,86 @@ func TestReadinessSyncSerializesSnapshotPublication(t *testing.T) {
 	}
 }
 
+func TestReadinessDoesNotPublishOpenAcrossPressureGenerationChange(
+	t *testing.T,
+) {
+	plan := readyCapacityPlanForRuntime(t)
+	start := time.Date(2026, 7, 30, 0, 0, 0, 0, time.UTC)
+	pressure, clock, next := readyPressureControllerForTest(
+		t,
+		plan,
+		start,
+	)
+	for index := 0; index < pressureConsecutiveSamples-1; index++ {
+		observePressureAt(t, pressure, clock, PressureSample{
+			ObservedAt: next.Add(
+				time.Duration(index) * PressureSampleInterval,
+			),
+			WorkloadMemoryBytes:   plan.WorkloadHighBytes,
+			HostMemAvailableBytes: 2 * gibibyte,
+		})
+	}
+	raceGate := &pressurePublishRaceGate{
+		controller: pressure,
+		beforePublish: func() {
+			observePressureAt(t, pressure, clock, PressureSample{
+				ObservedAt: next.Add(
+					2 * PressureSampleInterval,
+				),
+				WorkloadMemoryBytes:   plan.WorkloadHighBytes,
+				HostMemAvailableBytes: 2 * gibibyte,
+			})
+		},
+	}
+	config := testReadinessConfig()
+	checker, err := NewReadinessChecker(
+		config,
+		plan,
+		&fakeReadinessSource{
+			snapshot: validReadinessSnapshot(plan, config),
+		},
+		raceGate,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scheduler := NewScheduler()
+	if err := checker.SyncAdmission(
+		context.Background(),
+		scheduler,
+	); !errors.Is(err, ErrReadinessUnavailable) {
+		t.Fatalf("generation race sync error=%v", err)
+	}
+	if scheduler.AdmissionAllowed() {
+		t.Fatal("stale healthy generation opened scheduler")
+	}
+}
+
 type fakeReadinessSource struct {
 	snapshot ReadinessSnapshot
 	err      error
+}
+
+type pressurePublishRaceGate struct {
+	controller    *PressureController
+	once          sync.Once
+	beforePublish func()
+}
+
+func (g *pressurePublishRaceGate) AdmissionStatus() (
+	bool,
+	PressureReason,
+	uint64,
+) {
+	return g.controller.AdmissionStatus()
+}
+
+func (g *pressurePublishRaceGate) PublishAdmissionIfCurrent(
+	generation uint64,
+	publish func(bool, PressureReason),
+) bool {
+	g.once.Do(g.beforePublish)
+	return g.controller.PublishAdmissionIfCurrent(generation, publish)
 }
 
 type orderedReadinessSource struct {

@@ -102,6 +102,7 @@ type PressureController struct {
 	recoveryRuns     int
 	shedRequestedAt  map[string]time.Time
 	leaseHistory     map[string]pressureLeaseHistory
+	generation       uint64
 }
 
 // NewPressureController derives thresholds only from a sealed capacity plan.
@@ -143,25 +144,58 @@ func newPressureControllerWithClock(
 // AdmissionAllowed fails closed if the trusted sampler has never reported or
 // has stopped reporting, even when no later Observe call arrives.
 func (c *PressureController) AdmissionAllowed() bool {
-	allowed, _ := c.AdmissionStatus()
+	allowed, _, _ := c.AdmissionStatus()
 	return allowed
 }
 
 // AdmissionStatus returns the fresh gate and its bounded classification.
-func (c *PressureController) AdmissionStatus() (bool, PressureReason) {
+func (c *PressureController) AdmissionStatus() (
+	bool,
+	PressureReason,
+	uint64,
+) {
 	if c == nil {
-		return false, PressureReasonInvalidSample
+		return false, PressureReasonInvalidSample, 0
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.refreshFreshnessLocked()
+	return c.admissionAllowed, c.reason, c.generation
+}
+
+// PublishAdmissionIfCurrent holds the pressure lock while publishing. A sample
+// cannot invalidate the checked generation between confirmation and scheduler
+// publication.
+func (c *PressureController) PublishAdmissionIfCurrent(
+	expectedGeneration uint64,
+	publish func(bool, PressureReason),
+) bool {
+	if c == nil || publish == nil {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.refreshFreshnessLocked()
+	if c.generation != expectedGeneration {
+		return false
+	}
+	publish(c.admissionAllowed, c.reason)
+	return true
+}
+
+func (c *PressureController) refreshFreshnessLocked() {
 	now := c.now()
 	if c.lastReceivedAt.IsZero() ||
 		now.Before(c.lastReceivedAt) ||
 		now.Sub(c.lastReceivedAt) > PressureMaximumSampleGap {
+		changed := c.admissionAllowed ||
+			c.reason != PressureReasonSamplingGap
 		c.resetRunsLocked()
 		c.stopAdmissionLocked(PressureReasonSamplingGap)
+		if changed {
+			c.bumpGenerationLocked()
+		}
 	}
-	return c.admissionAllowed, c.reason
 }
 
 // Observe applies one consecutive pressure sample.
@@ -173,6 +207,7 @@ func (c *PressureController) Observe(
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.bumpGenerationLocked()
 
 	if err := validatePressureSample(sample); err != nil {
 		c.stopAdmissionLocked(PressureReasonInvalidSample)
@@ -344,7 +379,9 @@ func (c *PressureController) validateLeaseContinuityLocked(
 		if lease.State == LeaseOutputPersisting &&
 			history.FirstPersistingAt.IsZero() {
 			history.FirstPersistingAt = lease.PersistingSince
-			history.FirstPersistingReceivedAt = receivedAt
+			history.FirstPersistingReceivedAt = receivedAt.Add(
+				lease.PersistingSince.Sub(sample.ObservedAt),
+			)
 		}
 		updates[lease.LeaseID] = history
 	}
@@ -404,16 +441,6 @@ func (c *PressureController) selectShedLeaseLocked(
 	sample PressureSample,
 	receivedAt time.Time,
 ) string {
-	live := make(map[string]struct{}, len(sample.Leases))
-	for _, lease := range sample.Leases {
-		live[lease.LeaseID] = struct{}{}
-	}
-	for leaseID := range c.shedRequestedAt {
-		if _, ok := live[leaseID]; !ok {
-			delete(c.shedRequestedAt, leaseID)
-		}
-	}
-
 	candidate := PressureLease{}
 	for _, lease := range sample.Leases {
 		eligible := false
@@ -445,6 +472,13 @@ func (c *PressureController) selectShedLeaseLocked(
 	}
 	c.shedRequestedAt[candidate.LeaseID] = receivedAt
 	return candidate.LeaseID
+}
+
+func (c *PressureController) bumpGenerationLocked() {
+	c.generation++
+	if c.generation == 0 {
+		c.generation = 1
+	}
 }
 
 func (c *PressureController) stopAdmissionLocked(reason PressureReason) {

@@ -94,11 +94,21 @@ const (
 // JournalRPCService binds the v1 transport to the durable lease journal,
 // global scheduler, and fixed Rootless runtime.
 type JournalRPCService struct {
-	journal    *Journal
-	scheduler  *Scheduler
-	runtime    ContainerRuntime
-	creates    singleflight.Group
-	activateMu sync.Mutex
+	journal         *Journal
+	scheduler       *Scheduler
+	runtime         ContainerRuntime
+	creates         singleflight.Group
+	activationLocks activationLockSet
+}
+
+type activationLockSet struct {
+	mu      sync.Mutex
+	entries map[string]*activationLockEntry
+}
+
+type activationLockEntry struct {
+	token chan struct{}
+	refs  int
 }
 
 // NewJournalRPCService builds the only production RPC operation service.
@@ -228,8 +238,11 @@ func (s *JournalRPCService) Activate(
 	leaseID string,
 	input ActivateRPCRequest,
 ) error {
-	s.activateMu.Lock()
-	defer s.activateMu.Unlock()
+	unlock, err := s.activationLocks.Lock(ctx, leaseID)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 
 	current, err := s.leaseForPeer(ctx, peer, leaseID)
 	if err != nil {
@@ -273,6 +286,56 @@ func (s *JournalRPCService) Activate(
 		}
 	}
 	return nil
+}
+
+func (s *activationLockSet) Lock(
+	ctx context.Context,
+	leaseID string,
+) (func(), error) {
+	if s == nil || ctx == nil || !safeRuntimeToken(leaseID) {
+		return nil, ErrRPCProtocol
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	if s.entries == nil {
+		s.entries = make(map[string]*activationLockEntry)
+	}
+	entry := s.entries[leaseID]
+	if entry == nil {
+		entry = &activationLockEntry{token: make(chan struct{}, 1)}
+		entry.token <- struct{}{}
+		s.entries[leaseID] = entry
+	}
+	entry.refs++
+	s.mu.Unlock()
+
+	select {
+	case <-ctx.Done():
+		s.releaseReference(leaseID, entry)
+		return nil, ctx.Err()
+	case <-entry.token:
+		var once sync.Once
+		return func() {
+			once.Do(func() {
+				entry.token <- struct{}{}
+				s.releaseReference(leaseID, entry)
+			})
+		}, nil
+	}
+}
+
+func (s *activationLockSet) releaseReference(
+	leaseID string,
+	entry *activationLockEntry,
+) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entry.refs--
+	if entry.refs == 0 && s.entries[leaseID] == entry {
+		delete(s.entries, leaseID)
+	}
 }
 
 func (s *JournalRPCService) Heartbeat(
