@@ -3,6 +3,39 @@
 runmode: release             # Gin 开发模式, 可选值有：debug, release, test, product
 addr: :9091                  # HTTP 服务器监听地址
 
+# Feature flags
+features:
+  notification_center:
+    enabled: true             # 通知中心（铃铛 + 公告/问卷），prod 开启
+  document_system:
+    enabled: true             # 文档系统（Agent 产物在线编辑/导出），prod 开启
+  meeting_copilot:
+    enabled: false            # 会议副驾暂不对正式客户开放
+  meeting_diarization:
+    enabled: false            # 会议副驾关闭时，说话人分离也关闭
+  chatbot_query_rewrite:
+    enabled: false            # 查询改写实验结论不上线，保持关闭
+  rag_eval:
+    enabled: false            # RAG 调试端点不暴露到 prod
+  universal_rewriter:
+    enabled: false            # 通用改写器实验结论不上线，保持关闭
+  answerability_gate:
+    enabled: true             # 知识库问答：资料答不了时更诚实地拒答
+  structure_aware_chunking:
+    enabled: true             # 知识库入库：按文档结构切块
+  hybrid_retrieval:
+    enabled: true             # 知识库检索：向量 + 关键词混合检索
+  rerank_hardening:
+    enabled: true             # 知识库检索：结果去噪、降级兜底
+  kb_fallback:
+    enabled: true             # 知识库问答：检索为空时优雅兜底
+  doc2query:
+    enabled: true             # 知识库入库：为新文档生成可检索问题
+  provider_prompt_cache:
+    enabled: true             # 模型供应商原生 prompt cache
+  feishu_integration:
+    enabled: true             # 飞书个人工作空间 + Agent 飞书工具
+
 # 后台管理系统配置
 admin:
   addr: :9099                # 后台管理系统监听地址
@@ -10,6 +43,20 @@ admin:
 jwt:
   secret: ${NUMIND_JWT_SECRET}
   expire-hours: 12 # JWT Token 过期时间，单位：小时
+
+# 安全密钥：真实值只能从 /opt/numind/prod/secrets.env 注入，不能写进 Git。
+security:
+  thirdparty_token_key: ${NUMIND_SECURITY_THIRDPARTY_TOKEN_KEY}
+
+# 飞书个人工作空间
+feishu:
+  web_base_url: "https://youshu.asia"
+  redirect_uri: "https://youshu.asia/api/v1/feishu/oauth/callback"
+  home_base: "/opt/numind/prod/feishu-homes"
+  runtime_base: "/opt/numind/prod/feishu-runtime"
+  keyring: ${NUMIND_FEISHU_KEYRING}
+  key_version: "v1"
+  auth_owner: "numind-prod-feishu"
 
 # HTTPS 服务器相关配置
 tls:
@@ -101,6 +148,14 @@ rag:
   # 如果不配置，默认使用 resource.image_path 的同级目录
   # 当前环境自动计算路径: /opt/numind/prod/vector_db
   # vector_db_path: "/opt/numind/prod/vector_db"  # 也可以显式指定
+
+# Agent 网页搜索
+web_search:
+  provider: tavily
+  tavily:
+    api_key: ${NUMIND_WEB_SEARCH_TAVILY_API_KEY}
+    base_url: "https://api.tavily.com"
+    timeout_seconds: 30
 
 # 腾讯云 COS 配置
 cos:
@@ -453,4 +508,3 @@ langfuse:
 aihubmix:
   base_url: "https://aihubmix.com/v1"
   api_key: ${NUMIND_AIHUBMIX_API_KEY}
-
