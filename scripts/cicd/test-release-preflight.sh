@@ -122,10 +122,10 @@ assert_dirty_prod_rejected() {
     fail=1
   fi
 
-  if grep -q "prod release requires a clean release-relevant worktree and exact tag" "$out"; then
-    echo "PASS: $label output explains release-relevant clean worktree and exact tag requirement"
+  if grep -q "prod release requires a clean release-relevant worktree and exact" "$out"; then
+    echo "PASS: $label output explains release-relevant clean worktree and target tag requirement"
   else
-    echo "FAIL: $label output missing release-relevant clean worktree/exact tag error"
+    echo "FAIL: $label output missing release-relevant clean worktree/target tag error"
     fail=1
   fi
 

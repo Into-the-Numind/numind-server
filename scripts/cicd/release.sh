@@ -87,20 +87,35 @@ release_relevant_worktree_status() {
     ':(exclude)**/.DS_Store'
 }
 
+prod_target_tag_pattern() {
+  case "$TARGET" in
+    server) printf 'v[0-9]*' ;;
+    admin) printf 'admin-v[0-9]*' ;;
+  esac
+}
+
+prod_target_tag_description() {
+  case "$TARGET" in
+    server) printf 'v* tag for user API' ;;
+    admin) printf 'admin-v* tag for admin API' ;;
+  esac
+}
+
+select_prod_target_tag() {
+  local pattern
+  pattern="$(prod_target_tag_pattern)"
+  git tag --points-at HEAD --list "$pattern" | sort -V | tail -n 1
+}
+
 GIT_TAG=""
-EXPECTED_TAG_PATTERN=""
 RSYNC_SECRET_EXCLUDES=()
 if [ "$ENV" = "prod" ]; then
-  case "$TARGET" in
-    server) EXPECTED_TAG_PATTERN="v*" ;;
-    admin) EXPECTED_TAG_PATTERN="admin-v*" ;;
-  esac
-  GIT_TAG=$(git tag --points-at HEAD --list "$EXPECTED_TAG_PATTERN" | sort -V | tail -n 1)
+  GIT_TAG="$(select_prod_target_tag)"
   PROD_WORKTREE_STATUS="$(release_relevant_worktree_status)"
   if [ -z "$GIT_TAG" ] || [ -n "$PROD_WORKTREE_STATUS" ]; then
-    echo "ERROR: prod release requires a clean release-relevant worktree and exact tag." >&2
+    echo "ERROR: prod release requires a clean release-relevant worktree and exact $(prod_target_tag_description)." >&2
     if [ -z "$GIT_TAG" ]; then
-      echo "Tag: missing exact tag matching $EXPECTED_TAG_PATTERN for target=$TARGET (branch=$GIT_BRANCH, sha=$GIT_SHA)" >&2
+      echo "Tag: missing exact $(prod_target_tag_description) (branch=$GIT_BRANCH, sha=$GIT_SHA)" >&2
     fi
     if [ -n "$PROD_WORKTREE_STATUS" ]; then
       echo "Dirty items:" >&2
