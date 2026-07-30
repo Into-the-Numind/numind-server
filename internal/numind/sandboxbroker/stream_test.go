@@ -4,6 +4,8 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
 	"errors"
 	"io"
 	"os"
@@ -205,6 +207,88 @@ func TestStreamCopyBoundedCancellationClosesSlowReader(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("CopyBounded did not stop after cancellation")
+	}
+}
+
+func TestStreamCopyFramedRequiresExplicitTerminalAndDigest(t *testing.T) {
+	payload := bytes.Repeat([]byte("x"), StreamBufferSize+17)
+	var framed bytes.Buffer
+	total, err := CopyFramedBounded(
+		context.Background(),
+		&framed,
+		io.NopCloser(bytes.NewReader(payload)),
+		int64(len(payload)),
+		ErrStreamInputTooLarge,
+	)
+	if err != nil || total != int64(len(payload)) {
+		t.Fatalf("CopyFramedBounded total=%d err=%v", total, err)
+	}
+
+	var decoded bytes.Buffer
+	reader := bytes.NewReader(framed.Bytes())
+	for {
+		var header [4]byte
+		if _, err := io.ReadFull(reader, header[:]); err != nil {
+			t.Fatal(err)
+		}
+		size := binary.BigEndian.Uint32(header[:])
+		if size == 0 {
+			break
+		}
+		if size > StreamBufferSize {
+			t.Fatalf("frame size = %d", size)
+		}
+		if _, err := io.CopyN(&decoded, reader, int64(size)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	digest := make([]byte, sha256.Size)
+	if _, err := io.ReadFull(reader, digest); err != nil {
+		t.Fatal(err)
+	}
+	wantDigest := sha256.Sum256(payload)
+	if !bytes.Equal(decoded.Bytes(), payload) ||
+		!bytes.Equal(digest, wantDigest[:]) ||
+		reader.Len() != 0 {
+		t.Fatal("framed stream did not round-trip with exactly one terminal digest")
+	}
+
+	framed.Reset()
+	total, err = CopyFramedBounded(
+		context.Background(),
+		&framed,
+		io.NopCloser(strings.NewReader("123456")),
+		5,
+		ErrStreamInputTooLarge,
+	)
+	if !errors.Is(err, ErrStreamInputTooLarge) || total != 0 || framed.Len() != 0 {
+		t.Fatalf("over-limit framed copy total=%d bytes=%d err=%v", total, framed.Len(), err)
+	}
+}
+
+func TestStreamCopyFramedCancellationClosesBlockedDestination(t *testing.T) {
+	destinationReader, destinationWriter := io.Pipe()
+	t.Cleanup(func() { _ = destinationReader.Close() })
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		_, err := CopyFramedBounded(
+			ctx,
+			destinationWriter,
+			io.NopCloser(strings.NewReader("payload")),
+			MaxSingleFileBytes,
+			ErrStreamInputTooLarge,
+		)
+		result <- err
+	}()
+	cancel()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("CopyFramedBounded err = %v; want context canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("CopyFramedBounded did not close a blocked destination")
 	}
 }
 

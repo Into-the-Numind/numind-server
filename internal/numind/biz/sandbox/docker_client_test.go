@@ -182,6 +182,30 @@ func TestDockerCopyPathCanonicalization(t *testing.T) {
 	}
 }
 
+func TestDockerCopyDestinationCanonicalizesOnlyTrustedTempRoot(t *testing.T) {
+	raw := t.TempDir()
+	got, err := canonicalLegacyCopyDestination(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := filepath.EvalSymlinks(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("canonicalLegacyCopyDestination = %q; want %q", got, want)
+	}
+
+	outside := filepath.Join(
+		filepath.Dir(filepath.Clean(os.TempDir())),
+		"outside-destination",
+	)
+	got, err = canonicalLegacyCopyDestination(outside)
+	if err != nil || got != outside {
+		t.Fatalf("outside destination = %q, %v", got, err)
+	}
+}
+
 func TestDockerCopyControlledCLIBehavior(t *testing.T) {
 	root := resolvedTestTempDir(t)
 	if err := os.MkdirAll(filepath.Join(root, "input"), 0o700); err != nil {
@@ -190,21 +214,50 @@ func TestDockerCopyControlledCLIBehavior(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(root, "output"), 0o700); err != nil {
 		t.Fatal(err)
 	}
+	for _, poisonedModule := range []string{"secrets.py", "tarfile.py"} {
+		if err := os.WriteFile(
+			filepath.Join(root, poisonedModule),
+			[]byte(`raise RuntimeError("task-controlled module imported")`),
+			0o600,
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
 	installCopyHelperDocker(t, root)
 	client := &dockerCLIClient{logger: nopLogger{}}
 
-	input := io.NopCloser(strings.NewReader("input-data"))
 	if err := client.CopyToContainer(
 		context.Background(),
 		"container-1",
 		"/workdir/input/source.txt",
-		input,
+		strings.NewReader("input-data"),
 	); err != nil {
 		t.Fatalf("CopyToContainer: %v", err)
 	}
 	body, err := os.ReadFile(filepath.Join(root, "input", "source.txt"))
 	if err != nil || string(body) != "input-data" {
 		t.Fatalf("copied input = %q err=%v", body, err)
+	}
+	fileSourcePath := filepath.Join(resolvedTestTempDir(t), "source.bin")
+	if err := os.WriteFile(fileSourcePath, []byte("file-input"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fileSource, err := os.Open(fileSourcePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fileSource.Close()
+	if err := client.CopyToContainer(
+		context.Background(),
+		"container-1",
+		"/workdir/input/from-file.bin",
+		fileSource,
+	); err != nil {
+		t.Fatalf("regular-file CopyToContainer: %v", err)
+	}
+	body, err = os.ReadFile(filepath.Join(root, "input", "from-file.bin"))
+	if err != nil || string(body) != "file-input" {
+		t.Fatalf("regular-file input = %q err=%v", body, err)
 	}
 	if err := os.WriteFile(
 		filepath.Join(root, "output", "report.txt"),
@@ -244,6 +297,121 @@ func TestDockerCopyControlledCLIBehavior(t *testing.T) {
 		resolvedTestTempDir(t),
 	); err != nil {
 		t.Fatalf("missing CopyFromContainer should be empty: %v", err)
+	}
+}
+
+func TestDockerCopyInHelperRejectsEOFWithoutCompletionFrame(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 is required for the fixed Sandbox copy helper")
+	}
+	root := resolvedTestTempDir(t)
+	if err := os.Mkdir(filepath.Join(root, "input"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	var incomplete bytes.Buffer
+	incomplete.Write([]byte{0, 0, 0, 4})
+	incomplete.WriteString("part")
+	command := exec.Command(
+		"python3",
+		"-I",
+		"-c",
+		dockerCopyInHelper,
+		root,
+		"input/truncated.txt",
+	)
+	command.Stdin = &incomplete
+	if output, err := command.CombinedOutput(); err == nil {
+		t.Fatalf("helper accepted EOF without terminal frame: %s", output)
+	}
+	if _, statErr := os.Stat(
+		filepath.Join(root, "input", "truncated.txt"),
+	); !os.IsNotExist(statErr) {
+		t.Fatalf("incomplete helper stream published a file: %v", statErr)
+	}
+}
+
+func TestDockerCopyOutHelperBoundsEntriesAndDepth(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 is required for the fixed Sandbox copy helper")
+	}
+	root := resolvedTestTempDir(t)
+	output := filepath.Join(root, "output")
+	if err := os.Mkdir(output, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for index := 0; index < 57; index++ {
+		if err := os.Mkdir(
+			filepath.Join(output, fmt.Sprintf("entry-%02d", index)),
+			0o700,
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+	command := exec.Command(
+		"python3",
+		"-I",
+		"-c",
+		dockerCopyOutHelper,
+		root,
+		"output",
+		"",
+	)
+	if output, err := command.CombinedOutput(); err == nil {
+		t.Fatalf("helper accepted more than 56 entries: %d bytes", len(output))
+	}
+
+	if err := os.RemoveAll(filepath.Join(root, "output")); err != nil {
+		t.Fatal(err)
+	}
+	current := filepath.Join(root, "output")
+	if err := os.Mkdir(current, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for depth := 0; depth < 17; depth++ {
+		current = filepath.Join(current, "nested")
+		if err := os.Mkdir(current, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	command = exec.Command(
+		"python3",
+		"-I",
+		"-c",
+		dockerCopyOutHelper,
+		root,
+		"output",
+		"",
+	)
+	if output, err := command.CombinedOutput(); err == nil {
+		t.Fatalf("helper accepted output deeper than 16 levels: %d bytes", len(output))
+	}
+}
+
+func TestDockerCopyMissingSourceRequiresDedicatedExitAndMarker(t *testing.T) {
+	run := func(code int) error {
+		command := exec.Command("/bin/sh", "-c", fmt.Sprintf("exit %d", code))
+		return command.Run()
+	}
+	if !isInitialCopySourceMissing(
+		run(dockerCopyInitialSourceMissingExit),
+		dockerCopyInitialSourceMissingMarker+"\n",
+	) {
+		t.Fatal("dedicated missing-source result was not recognized")
+	}
+	for _, test := range []struct {
+		err    error
+		stderr string
+	}{
+		{err: run(1), stderr: "No such file or directory"},
+		{err: run(dockerCopyInitialSourceMissingExit), stderr: "No such file"},
+		{
+			err:    run(dockerCopyInitialSourceMissingExit),
+			stderr: dockerCopyInitialSourceMissingMarker + "\npartial output",
+		},
+	} {
+		if isInitialCopySourceMissing(test.err, test.stderr) {
+			t.Fatalf("generic producer failure was treated as missing: %q", test.stderr)
+		}
 	}
 }
 
@@ -485,14 +653,17 @@ if [ "${1:-}" = "-i" ]; then
   shift
 fi
 shift
-python_bin="$1"
+	python_bin="$1"
+	shift
+isolated="$1"
 shift
-dash_c="$1"
+	dash_c="$1"
 shift
 program="$1"
 shift
+cd "$NUMIND_FAKE_CONTAINER_ROOT"
 shift
-exec "$python_bin" "$dash_c" "$program" "$NUMIND_FAKE_CONTAINER_ROOT" "$@"
+exec "$python_bin" "$isolated" "$dash_c" "$program" "$NUMIND_FAKE_CONTAINER_ROOT" "$@"
 `
 	if err := os.WriteFile(wrapper, []byte(script), 0o700); err != nil {
 		t.Fatal(err)

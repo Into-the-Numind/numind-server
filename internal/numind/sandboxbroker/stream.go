@@ -4,6 +4,8 @@ import (
 	"archive/tar"
 	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -213,6 +215,75 @@ func CopyBounded(
 	return n, nil
 }
 
+// CopyFramedBounded streams authenticated chunks followed by an explicit
+// completion frame. A receiver must not publish the file when EOF arrives
+// before the terminal frame and digest.
+func CopyFramedBounded(
+	ctx context.Context,
+	dst io.Writer,
+	src io.ReadCloser,
+	maxBytes int64,
+	limitErr error,
+) (int64, error) {
+	if dst == nil || src == nil || maxBytes < 0 || limitErr == nil {
+		return 0, ErrStreamPolicyDenied
+	}
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = src.Close()
+			if closer, ok := dst.(io.Closer); ok {
+				_ = closer.Close()
+			}
+		case <-done:
+		}
+	}()
+	defer close(done)
+
+	buffer := make([]byte, StreamBufferSize)
+	digest := sha256.New()
+	var total int64
+	for {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return total, ctxErr
+		}
+		read, readErr := src.Read(buffer)
+		if read > 0 {
+			if int64(read) > maxBytes-total {
+				return total, limitErr
+			}
+			var frameHeader [4]byte
+			binary.BigEndian.PutUint32(frameHeader[:], uint32(read))
+			if err := writeAllContext(ctx, dst, frameHeader[:]); err != nil {
+				return total, err
+			}
+			if err := writeAllContext(ctx, dst, buffer[:read]); err != nil {
+				return total, err
+			}
+			_, _ = digest.Write(buffer[:read])
+			total += int64(read)
+		}
+		if readErr != nil {
+			if !errors.Is(readErr, io.EOF) {
+				return total, readErr
+			}
+			break
+		}
+		if read == 0 {
+			return total, io.ErrNoProgress
+		}
+	}
+	var terminal [4]byte
+	if err := writeAllContext(ctx, dst, terminal[:]); err != nil {
+		return total, err
+	}
+	if err := writeAllContext(ctx, dst, digest.Sum(nil)); err != nil {
+		return total, err
+	}
+	return total, nil
+}
+
 // ExtractTarStream safely extracts a bounded tar stream without following links.
 func ExtractTarStream(
 	ctx context.Context,
@@ -390,6 +461,26 @@ func copyExactCancelable(
 		return written, io.ErrUnexpectedEOF
 	}
 	return written, nil
+}
+
+func writeAllContext(ctx context.Context, dst io.Writer, data []byte) error {
+	for len(data) > 0 {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
+		written, err := dst.Write(data)
+		if written < 0 || written > len(data) {
+			return io.ErrShortWrite
+		}
+		data = data[written:]
+		if err != nil {
+			return err
+		}
+		if written == 0 {
+			return io.ErrShortWrite
+		}
+	}
+	return nil
 }
 
 func openExistingDirectoryNoFollow(absolutePath string, requirePrivate bool) (int, error) {

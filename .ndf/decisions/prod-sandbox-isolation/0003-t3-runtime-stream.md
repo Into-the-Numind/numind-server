@@ -37,18 +37,31 @@ Large input/output files also cannot be accumulated in API process memory.
 10. Canonicalize copy paths to `/workdir`, approved `/skills/<name>`, or
     `/workdir/output`. A fixed Python helper then traverses every path component
     inside the container with descriptor-relative `O_NOFOLLOW` operations.
-11. Copy input into a private temporary regular file and publish it with a
-    no-overwrite hardlink operation. Copy output through a fixed streaming tar
-    writer that rejects symlinks, hardlinks, devices, FIFOs, inode replacement,
-    and special types before opening them. No caller-controlled tar option is
-    ever executed.
-12. Extract output archives with descriptor-relative, no-follow filesystem
+11. Frame copy input into at most 64 KiB chunks and finish with an explicit
+    terminal frame plus SHA-256 digest. The isolated Python helper publishes
+    its private temporary regular file only after that terminal verifies, so
+    Docker CLI disconnect, cancellation, and over-limit EOF cannot publish a
+    truncated file. Publication uses a no-overwrite hardlink operation.
+12. Run both helpers with Python isolated mode so `/workdir`, `PYTHONPATH`, and
+    task-authored modules cannot replace trusted standard-library modules.
+    Copy output through a fixed streaming tar writer that rejects symlinks,
+    hardlinks, devices, FIFOs, inode replacement, and special types before
+    opening them. No caller-controlled tar option is ever executed.
+13. Bound the output helper itself to depth 16, 56 entries, 10 regular files,
+    50 MiB per file, and 200 MiB total. Directory iteration is streaming, and
+    descriptor use is bounded by the depth ceiling.
+14. Extract output archives with descriptor-relative, no-follow filesystem
     operations starting at `/`, including every host destination ancestor.
     Do not call a host `tar` process and do not buffer the archive.
-13. Reopen and revalidate the Seccomp path, private ancestors, mode, owner,
-    link count, device, inode, size, and checksum immediately before generating
-    each Docker launch.
-14. Context cancellation closes the stream reader and the active stream writer
+15. Read the checksum-verified Seccomp profile into a private startup snapshot.
+    Each Docker launch receives a new anonymous, unlinked file descriptor
+    inherited as fd 3; Docker reads `/dev/fd/3`, never the configurable
+    pathname. Replacing or deleting that pathname after startup cannot affect
+    a task launch.
+16. Recognize a missing copy-out source only through the helper's dedicated
+    exit code and exact marker. Mid-traversal producer errors remain failures
+    even when their text contains “No such file”.
+17. Context cancellation closes the stream reader and the active stream writer
     so a blocked read or write cannot strand a broker goroutine.
 
 ## Verification
@@ -62,6 +75,10 @@ Large input/output files also cannot be accumulated in API process memory.
 - Controlled Docker CLI behavior tests execute the fixed Python helpers and
   cover copy-in, copy-out, option-like filenames, missing sources, cancellation,
   overwrite rejection, and input/output ceilings.
+- Additional regressions cover task-authored Python module poisoning,
+  incomplete framed input, anonymous Seccomp fd pinning, exact missing-source
+  classification, helper entry/depth ceilings, and trusted macOS temp-root
+  canonicalization without weakening no-follow checks below that root.
 - `go vet ./...` and `golangci-lint run ./...` pass through `task lint`.
 - `config_prod.yaml`, the Prod database, and all environment switches remain
   untouched.

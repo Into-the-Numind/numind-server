@@ -5,7 +5,7 @@ features:
   description: Run the Dev-proven Sandbox feature on the existing Prod host while isolating its Docker control plane, networks, secrets, mounts, and resource budget from customer-facing services and data.
   classification_reason: 'Standard: production host container-control security, a separate Sandbox runtime, build/deploy scripts, resource policy, and rollback verification span more than three files and are high risk.'
   last_updated_by: ai-s4-coding
-  last_updated_at: '2026-07-30T09:05:41+0800'
+  last_updated_at: '2026-07-30T09:27:56+0800'
   created_at: '2026-07-30T01:26:00+0800'
   track: standard
   stage: S4
@@ -13,7 +13,7 @@ features:
   repos: [numind-server]
   branches: {numind-server: feature/prod-sandbox-isolation}
   worktrees: {numind-server: /private/tmp/wt-prod-sandbox-isolation-numind-server}
-  progress: {total_tasks: 18, completed_tasks: 3, reviewed_tasks: 2, current_task: 'T3 review round 2 pending after security hardening'}
+  progress: {total_tasks: 18, completed_tasks: 3, reviewed_tasks: 2, current_task: 'T3 review round 3 pending after execution-boundary hardening'}
   artifacts:
     requirement: requirements/prod-sandbox-isolation.md
     proposal: proposals/prod-sandbox-isolation-proposal.md
@@ -51,6 +51,7 @@ features:
   - 'T2 review round 3: both independent reviews PASS with 0 P0, 0 P1, 0 P2 at commit e73605b8.'
   - 'T3: fixed digest/Seccomp/runtime/exec policy and constant-memory copy primitives implemented; focused and full race tests, twenty repeated focused runs, go vet, and task lint pass.'
   - 'T3 review round 1: spec FAIL 0 P0/1 P1/2 P2 and quality FAIL 0 P0/5 P1/1 P2; container and host ancestor symlinks, tar option interpretation, Seccomp replacement, blocked writes, legacy reader compatibility, and behavior-level copy coverage were hardened before re-review.'
+  - 'T3 review round 2: spec PASS 0 P0/0 P1/2 P2, but quality FAIL 0 P0/4 P1/1 P2; Seccomp now crosses the Docker execution boundary through a pinned anonymous fd, Python helpers use isolated mode, copy-in requires a framed terminal digest, missing source uses an exact exit contract, and helper traversal has its own fixed depth/entry/file/byte ceilings.'
   blockers: []
 - id: xhs-analytics-summary-tests
   ndf_version: '3.0'

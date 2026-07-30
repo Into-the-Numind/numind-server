@@ -1,12 +1,14 @@
 package sandboxbroker
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -19,10 +21,15 @@ const (
 	SandboxImageRepository = "ccr.ccs.tencentyun.com/youshunumind/sandbox-skill"
 	// SandboxWorkloadCgroupParent is the fixed delegated workload slice.
 	SandboxWorkloadCgroupParent = "numind-sandbox-workload.slice"
+	// SandboxDockerBinary is the only Docker CLI executable used by sandboxd.
+	SandboxDockerBinary = "/usr/bin/docker"
 	// RuntimeExecTimeout is the hard wall-clock limit for one exec.
 	RuntimeExecTimeout = 30 * time.Second
 	// RuntimeSessionTimeout is the hard absolute lifetime of one active lease.
 	RuntimeSessionTimeout = MaxActiveLeaseDuration
+	// runtimeSeccompFDPath is inherited as child fd 3 for each Docker CLI call.
+	runtimeSeccompFDPath   = "/dev/fd/3"
+	maxSeccompProfileBytes = 1 << 20
 )
 
 var (
@@ -43,11 +50,10 @@ type RuntimeConfig struct {
 
 // RuntimePolicy owns the verified immutable container and exec templates.
 type RuntimePolicy struct {
-	imageDigest     string
-	seccompPath     string
-	seccompIdentity verifiedSeccompIdentity
-	allowedSkills   map[string]struct{}
-	allowedEnv      map[string]struct{}
+	imageDigest    string
+	seccompProfile []byte
+	allowedSkills  map[string]struct{}
+	allowedEnv     map[string]struct{}
 }
 
 type runtimeSpawnSpec struct {
@@ -85,7 +91,7 @@ func NewRuntimePolicy(cfg RuntimeConfig) (*RuntimePolicy, error) {
 		!validSHA256(cfg.SeccompSHA256) {
 		return nil, ErrRuntimePolicyDenied
 	}
-	seccompIdentity, err := inspectVerifiedSeccomp(cfg.SeccompPath)
+	seccompIdentity, seccompProfile, err := readVerifiedSeccomp(cfg.SeccompPath)
 	if err != nil {
 		return nil, err
 	}
@@ -94,11 +100,10 @@ func NewRuntimePolicy(cfg RuntimeConfig) (*RuntimePolicy, error) {
 	}
 
 	policy := &RuntimePolicy{
-		imageDigest:     cfg.ImageDigest,
-		seccompPath:     cfg.SeccompPath,
-		seccompIdentity: seccompIdentity,
-		allowedSkills:   make(map[string]struct{}, len(cfg.AllowedSkills)),
-		allowedEnv:      make(map[string]struct{}, len(cfg.AllowedToolEnvKeys)),
+		imageDigest:    cfg.ImageDigest,
+		seccompProfile: append([]byte(nil), seccompProfile...),
+		allowedSkills:  make(map[string]struct{}, len(cfg.AllowedSkills)),
+		allowedEnv:     make(map[string]struct{}, len(cfg.AllowedToolEnvKeys)),
 	}
 	for _, skill := range cfg.AllowedSkills {
 		if !safeRuntimeToken(skill) {
@@ -122,14 +127,21 @@ func NewRuntimePolicy(cfg RuntimeConfig) (*RuntimePolicy, error) {
 	return policy, nil
 }
 
-func (p *RuntimePolicy) spawnSpec(leaseID string, brokerInstance string) (runtimeSpawnSpec, error) {
-	if p == nil || !safeRuntimeToken(leaseID) || !safeRuntimeToken(brokerInstance) {
+func (p *RuntimePolicy) spawnSpec(
+	leaseID string,
+	brokerInstance string,
+	seccompPath string,
+) (runtimeSpawnSpec, error) {
+	if p == nil ||
+		!safeRuntimeToken(leaseID) ||
+		!safeRuntimeToken(brokerInstance) ||
+		seccompPath != runtimeSeccompFDPath {
 		return runtimeSpawnSpec{}, ErrRuntimePolicyDenied
 	}
 	return runtimeSpawnSpec{
 		Image:        p.imageDigest,
 		User:         "1000:1000",
-		SecurityOpts: []string{"no-new-privileges", "seccomp=" + p.seccompPath},
+		SecurityOpts: []string{"no-new-privileges", "seccomp=" + seccompPath},
 		CapDrop:      []string{"ALL"},
 		MemoryBytes:  512 << 20,
 		NanoCPUs:     1_000_000_000,
@@ -153,24 +165,47 @@ func (p *RuntimePolicy) spawnSpec(leaseID string, brokerInstance string) (runtim
 	}, nil
 }
 
-// DockerSpawnArgs returns Docker CLI arguments assembled only from the verified
-// policy. Callers cannot submit a mutable spawn spec to the execution boundary.
-func (p *RuntimePolicy) DockerSpawnArgs(leaseID string, brokerInstance string) ([]string, error) {
+func (p *RuntimePolicy) dockerSpawnCommand(
+	ctx context.Context,
+	binary string,
+	leaseID string,
+	brokerInstance string,
+) (*exec.Cmd, *os.File, error) {
 	if p == nil {
-		return nil, ErrRuntimePolicyDenied
+		return nil, nil, ErrRuntimePolicyDenied
 	}
-	currentIdentity, err := inspectVerifiedSeccomp(p.seccompPath)
+	seccompFile, err := newAnonymousSeccompFile(p.seccompProfile)
+	if err != nil {
+		return nil, nil, err
+	}
+	spec, err := p.spawnSpec(leaseID, brokerInstance, runtimeSeccompFDPath)
+	if err != nil {
+		_ = seccompFile.Close()
+		return nil, nil, err
+	}
+	command := exec.CommandContext(ctx, binary, spec.dockerArgs()...)
+	command.ExtraFiles = []*os.File{seccompFile}
+	return command, seccompFile, nil
+}
+
+// RunDockerSpawn executes the fixed Docker launch while keeping the verified
+// Seccomp inode open and inherited until the Docker CLI has consumed it.
+func (p *RuntimePolicy) RunDockerSpawn(
+	ctx context.Context,
+	leaseID string,
+	brokerInstance string,
+) ([]byte, error) {
+	command, seccompFile, err := p.dockerSpawnCommand(
+		ctx,
+		SandboxDockerBinary,
+		leaseID,
+		brokerInstance,
+	)
 	if err != nil {
 		return nil, err
 	}
-	if currentIdentity != p.seccompIdentity {
-		return nil, ErrRuntimeIntegrity
-	}
-	spec, err := p.spawnSpec(leaseID, brokerInstance)
-	if err != nil {
-		return nil, err
-	}
-	return spec.dockerArgs(), nil
+	defer seccompFile.Close()
+	return command.Output()
 }
 
 func (s runtimeSpawnSpec) dockerArgs() []string {
@@ -273,16 +308,18 @@ type verifiedSeccompIdentity struct {
 	sha256 string
 }
 
-func inspectVerifiedSeccomp(filePath string) (verifiedSeccompIdentity, error) {
+func readVerifiedSeccomp(
+	filePath string,
+) (verifiedSeccompIdentity, []byte, error) {
 	parentFD, err := openExistingDirectoryNoFollow(filepath.Dir(filePath), true)
 	if err != nil {
 		if errors.Is(err, unix.ELOOP) ||
 			errors.Is(err, unix.ENOTDIR) ||
 			errors.Is(err, unix.EPERM) ||
 			errors.Is(err, unix.EINVAL) {
-			return verifiedSeccompIdentity{}, ErrRuntimePolicyDenied
+			return verifiedSeccompIdentity{}, nil, ErrRuntimePolicyDenied
 		}
-		return verifiedSeccompIdentity{}, fmt.Errorf(
+		return verifiedSeccompIdentity{}, nil, fmt.Errorf(
 			"%w: open seccomp parent",
 			ErrRuntimeIntegrity,
 		)
@@ -297,16 +334,22 @@ func inspectVerifiedSeccomp(filePath string) (verifiedSeccompIdentity, error) {
 	)
 	if err != nil {
 		if errors.Is(err, unix.ELOOP) {
-			return verifiedSeccompIdentity{}, ErrRuntimePolicyDenied
+			return verifiedSeccompIdentity{}, nil, ErrRuntimePolicyDenied
 		}
-		return verifiedSeccompIdentity{}, fmt.Errorf("%w: open seccomp", ErrRuntimeIntegrity)
+		return verifiedSeccompIdentity{}, nil, fmt.Errorf(
+			"%w: open seccomp",
+			ErrRuntimeIntegrity,
+		)
 	}
 	file := os.NewFile(uintptr(fd), "sandbox-seccomp")
-	defer file.Close()
 
 	var stat unix.Stat_t
 	if err := unix.Fstat(fd, &stat); err != nil {
-		return verifiedSeccompIdentity{}, fmt.Errorf("%w: inspect seccomp", ErrRuntimeIntegrity)
+		_ = file.Close()
+		return verifiedSeccompIdentity{}, nil, fmt.Errorf(
+			"%w: inspect seccomp",
+			ErrRuntimeIntegrity,
+		)
 	}
 	mode := uint32(stat.Mode)
 	ownerAllowed := stat.Uid == 0 || stat.Uid == uint32(os.Geteuid())
@@ -314,18 +357,56 @@ func inspectVerifiedSeccomp(filePath string) (verifiedSeccompIdentity, error) {
 		!ownerAllowed ||
 		uint64(stat.Nlink) != 1 ||
 		os.FileMode(mode).Perm()&0o222 != 0 {
-		return verifiedSeccompIdentity{}, ErrRuntimePolicyDenied
+		_ = file.Close()
+		return verifiedSeccompIdentity{}, nil, ErrRuntimePolicyDenied
 	}
-	hash := sha256.New()
-	if _, err := io.CopyBuffer(hash, file, make([]byte, StreamBufferSize)); err != nil {
-		return verifiedSeccompIdentity{}, fmt.Errorf("%w: hash seccomp", ErrRuntimeIntegrity)
+	profile, err := io.ReadAll(io.LimitReader(file, maxSeccompProfileBytes+1))
+	if err != nil {
+		_ = file.Close()
+		return verifiedSeccompIdentity{}, nil, fmt.Errorf(
+			"%w: read seccomp",
+			ErrRuntimeIntegrity,
+		)
 	}
+	_ = file.Close()
+	if len(profile) == 0 || len(profile) > maxSeccompProfileBytes {
+		return verifiedSeccompIdentity{}, nil, ErrRuntimePolicyDenied
+	}
+	hash := sha256.Sum256(profile)
 	return verifiedSeccompIdentity{
 		device: uint64(stat.Dev),
 		inode:  uint64(stat.Ino),
 		size:   stat.Size,
-		sha256: "sha256:" + hex.EncodeToString(hash.Sum(nil)),
-	}, nil
+		sha256: "sha256:" + hex.EncodeToString(hash[:]),
+	}, profile, nil
+}
+
+func newAnonymousSeccompFile(profile []byte) (*os.File, error) {
+	if len(profile) == 0 || len(profile) > maxSeccompProfileBytes {
+		return nil, ErrRuntimePolicyDenied
+	}
+	file, err := os.CreateTemp("", ".numind-seccomp-*")
+	if err != nil {
+		return nil, fmt.Errorf("%w: create anonymous seccomp", ErrRuntimeIntegrity)
+	}
+	name := file.Name()
+	if err := os.Remove(name); err != nil {
+		_ = file.Close()
+		return nil, fmt.Errorf("%w: unlink anonymous seccomp", ErrRuntimeIntegrity)
+	}
+	if _, err := file.Write(profile); err != nil {
+		_ = file.Close()
+		return nil, fmt.Errorf("%w: write anonymous seccomp", ErrRuntimeIntegrity)
+	}
+	if err := file.Chmod(0o400); err != nil {
+		_ = file.Close()
+		return nil, fmt.Errorf("%w: protect anonymous seccomp", ErrRuntimeIntegrity)
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		_ = file.Close()
+		return nil, fmt.Errorf("%w: rewind anonymous seccomp", ErrRuntimeIntegrity)
+	}
+	return file, nil
 }
 
 func validPinnedImage(image string) bool {

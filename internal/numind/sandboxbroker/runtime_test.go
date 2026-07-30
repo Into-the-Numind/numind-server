@@ -1,6 +1,7 @@
 package sandboxbroker
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -14,7 +15,11 @@ import (
 
 func TestRuntimeSpawnSpecIsFullyFixed(t *testing.T) {
 	policy := testRuntimePolicy(t)
-	spec, err := policy.spawnSpec("lease-123", "broker-primary")
+	spec, err := policy.spawnSpec(
+		"lease-123",
+		"broker-primary",
+		runtimeSeccompFDPath,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,7 +41,7 @@ func TestRuntimeSpawnSpecIsFullyFixed(t *testing.T) {
 	}
 	if !reflect.DeepEqual(spec.SecurityOpts, []string{
 		"no-new-privileges",
-		"seccomp=" + policy.seccompPath,
+		"seccomp=" + runtimeSeccompFDPath,
 	}) {
 		t.Fatalf("SecurityOpts = %v", spec.SecurityOpts)
 	}
@@ -60,10 +65,17 @@ func TestRuntimeSpawnSpecIsFullyFixed(t *testing.T) {
 		t.Fatalf("EntrypointArgs = %v", spec.EntrypointArgs)
 	}
 
-	args, err := policy.DockerSpawnArgs("lease-123", "broker-primary")
+	command, seccompFile, err := policy.dockerSpawnCommand(
+		context.Background(),
+		"docker",
+		"lease-123",
+		"broker-primary",
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer seccompFile.Close()
+	args := command.Args[1:]
 	joined := strings.Join(args, " ")
 	for _, required := range []string{
 		"--pull=never",
@@ -105,8 +117,13 @@ func TestRuntimeDockerSpawnArgsCannotBeBuiltFromMutableSpec(t *testing.T) {
 		t.Fatal("RuntimeSpawnSpec exposes an executable DockerArgs method")
 	}
 	policy := testRuntimePolicy(t)
-	if _, err := policy.DockerSpawnArgs("bad=lease", "broker-primary"); !errors.Is(err, ErrRuntimePolicyDenied) {
-		t.Fatalf("DockerSpawnArgs unsafe label err = %v", err)
+	if _, _, err := policy.dockerSpawnCommand(
+		context.Background(),
+		"docker",
+		"bad=lease",
+		"broker-primary",
+	); !errors.Is(err, ErrRuntimePolicyDenied) {
+		t.Fatalf("dockerSpawnCommand unsafe label err = %v", err)
 	}
 }
 
@@ -189,29 +206,53 @@ func TestRuntimePolicyRejectsUnsafeSeccompFilesystemTargets(t *testing.T) {
 	}
 }
 
-func TestRuntimeDockerSpawnArgsReverifySeccompIdentityAndHash(t *testing.T) {
+func TestRuntimeDockerSpawnPinsVerifiedSeccompFD(t *testing.T) {
 	cfg := testRuntimeConfig(t)
+	original, err := os.ReadFile(cfg.SeccompPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	policy, err := NewRuntimePolicy(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := policy.DockerSpawnArgs("lease-1", "broker-primary"); err != nil {
-		t.Fatalf("initial DockerSpawnArgs: %v", err)
+	script := filepath.Join(secureTempDir(t), "fake-docker")
+	if err := os.WriteFile(script, []byte(`#!/bin/sh
+set -eu
+profile=""
+for argument in "$@"; do
+  case "$argument" in
+    --security-opt=seccomp=*) profile="${argument#--security-opt=seccomp=}" ;;
+  esac
+done
+[ "$profile" = "/dev/fd/3" ]
+cat "$profile"
+`), 0o700); err != nil {
+		t.Fatal(err)
 	}
-
 	replacement := cfg.SeccompPath + ".replacement"
-	body := []byte(`{"defaultAction":"SCMP_ACT_ALLOW"}`)
-	if err := os.WriteFile(replacement, body, 0o400); err != nil {
+	if err := os.WriteFile(replacement, []byte(`{"replaced":true}`), 0o400); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Rename(replacement, cfg.SeccompPath); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := policy.DockerSpawnArgs(
+	command, seccompFile, err := policy.dockerSpawnCommand(
+		context.Background(),
+		script,
 		"lease-1",
 		"broker-primary",
-	); !errors.Is(err, ErrRuntimeIntegrity) {
-		t.Fatalf("replacement seccomp err = %v; want integrity failure", err)
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer seccompFile.Close()
+	output, err := command.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(output, original) {
+		t.Fatalf("spawn read replaced pathname: got %q want %q", output, original)
 	}
 }
 
@@ -305,7 +346,11 @@ func TestRuntimeSpawnSpecRejectsLabelInjection(t *testing.T) {
 		{"lease-1", "broker,secondary"},
 		{"", "broker-primary"},
 	} {
-		if _, err := policy.spawnSpec(values[0], values[1]); !errors.Is(err, ErrRuntimePolicyDenied) {
+		if _, err := policy.spawnSpec(
+			values[0],
+			values[1],
+			runtimeSeccompFDPath,
+		); !errors.Is(err, ErrRuntimePolicyDenied) {
 			t.Fatalf("spawnSpec(%q,%q) err = %v", values[0], values[1], err)
 		}
 	}

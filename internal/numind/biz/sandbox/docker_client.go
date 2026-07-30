@@ -7,8 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"path"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -114,9 +116,16 @@ type InspectResult struct {
 // dockerBinary returns the docker CLI binary name; var so tests can override.
 var dockerBinary = "docker"
 
+const (
+	dockerCopyInitialSourceMissingExit   = 44
+	dockerCopyInitialSourceMissingMarker = "NUMIND_COPY_INITIAL_SOURCE_MISSING"
+)
+
 const dockerCopyInHelper = `
+import hashlib
 import os
 import secrets
+import struct
 import sys
 
 def parts(value):
@@ -127,6 +136,17 @@ def parts(value):
     ):
         raise ValueError("unsafe relative path")
     return items
+
+def read_exact(size):
+    chunks = []
+    remaining = size
+    while remaining:
+        chunk = sys.stdin.buffer.read(remaining)
+        if not chunk:
+            raise EOFError("copy-in ended before completion frame")
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    return b"".join(chunks)
 
 def open_parent(root, relative):
     items = parts(relative)
@@ -170,14 +190,27 @@ try:
             pass
     if file_fd < 0:
         raise FileExistsError("cannot allocate temporary copy target")
+    digest = hashlib.sha256()
+    total = 0
     while True:
-        chunk = sys.stdin.buffer.read(65536)
-        if not chunk:
+        header = read_exact(4)
+        frame_size = struct.unpack(">I", header)[0]
+        if frame_size == 0:
             break
+        if frame_size > 65536 or total + frame_size > 50 * 1024 * 1024:
+            raise ValueError("copy-in frame exceeds fixed limits")
+        chunk = read_exact(frame_size)
+        digest.update(chunk)
+        total += frame_size
         view = memoryview(chunk)
         while view:
             written = os.write(file_fd, view)
+            if written <= 0:
+                raise OSError("copy-in write made no progress")
             view = view[written:]
+    expected_digest = read_exact(32)
+    if expected_digest != digest.digest():
+        raise ValueError("copy-in completion digest mismatch")
     os.fsync(file_fd)
     os.close(file_fd)
     file_fd = -1
@@ -207,6 +240,14 @@ import posixpath
 import stat
 import sys
 import tarfile
+
+MAX_DEPTH = 16
+MAX_ENTRIES = 56
+MAX_FILES = 10
+MAX_SINGLE_BYTES = 50 * 1024 * 1024
+MAX_TOTAL_BYTES = 200 * 1024 * 1024
+SOURCE_MISSING_EXIT = 44
+SOURCE_MISSING_MARKER = "NUMIND_COPY_INITIAL_SOURCE_MISSING"
 
 def parts(value):
     items = value.split("/")
@@ -278,6 +319,8 @@ def tar_info(name, metadata):
         info.mode = 0o700
         info.size = 0
     elif stat.S_ISREG(metadata.st_mode):
+        if metadata.st_nlink != 1:
+            raise ValueError("hardlinked output is not allowed")
         info.type = tarfile.REGTYPE
         info.mode = 0o600
         info.size = metadata.st_size
@@ -285,11 +328,21 @@ def tar_info(name, metadata):
         raise ValueError("unsupported output file type")
     return info
 
-def emit(archive, fd, archive_name):
+def emit(archive, fd, archive_name, depth, counters):
+    if depth > MAX_DEPTH:
+        raise ValueError("output directory depth exceeds fixed limit")
     metadata = os.fstat(fd)
     if stat.S_ISREG(metadata.st_mode):
         if not archive_name:
             raise ValueError("regular file requires archive name")
+        if metadata.st_nlink != 1:
+            raise ValueError("hardlinked output is not allowed")
+        if metadata.st_size > MAX_SINGLE_BYTES:
+            raise ValueError("output file exceeds fixed limit")
+        counters["files"] += 1
+        counters["bytes"] += metadata.st_size
+        if counters["files"] > MAX_FILES or counters["bytes"] > MAX_TOTAL_BYTES:
+            raise ValueError("output aggregate exceeds fixed limit")
         with os.fdopen(os.dup(fd), "rb", closefd=True) as source:
             archive.addfile(tar_info(archive_name, metadata), source)
         return
@@ -297,19 +350,28 @@ def emit(archive, fd, archive_name):
         raise ValueError("unsupported output file type")
     if archive_name:
         archive.addfile(tar_info(archive_name, metadata))
-    for name in sorted(os.listdir(fd)):
-        if name in ("", ".", "..") or "/" in name or "\x00" in name:
-            raise ValueError("unsafe output name")
-        child = open_child(fd, name, False)
-        try:
-            nested_name = posixpath.join(archive_name, name) if archive_name else name
-            emit(archive, child, nested_name)
-        finally:
-            os.close(child)
+    with os.scandir(fd) as entries:
+        for entry in entries:
+            counters["entries"] += 1
+            if counters["entries"] > MAX_ENTRIES:
+                raise ValueError("output entry count exceeds fixed limit")
+            name = entry.name
+            if name in ("", ".", "..") or "/" in name or "\x00" in name:
+                raise ValueError("unsafe output name")
+            child = open_child(fd, name, False)
+            try:
+                nested_name = posixpath.join(archive_name, name) if archive_name else name
+                emit(archive, child, nested_name, depth + 1, counters)
+            finally:
+                os.close(child)
 
 if len(sys.argv) != 4:
     raise ValueError("invalid copy-out arguments")
-source_fd = open_relative(sys.argv[1], sys.argv[2])
+try:
+    source_fd = open_relative(sys.argv[1], sys.argv[2])
+except FileNotFoundError:
+    sys.stderr.write(SOURCE_MISSING_MARKER + "\n")
+    sys.exit(SOURCE_MISSING_EXIT)
 try:
     if not sys.argv[3] and not stat.S_ISDIR(os.fstat(source_fd).st_mode):
         raise ValueError("contents-only source must be a directory")
@@ -318,7 +380,13 @@ try:
         mode="w|",
         format=tarfile.PAX_FORMAT,
     ) as archive:
-        emit(archive, source_fd, sys.argv[3])
+        emit(
+            archive,
+            source_fd,
+            sys.argv[3],
+            0,
+            {"entries": 0, "files": 0, "bytes": 0},
+        )
 finally:
     os.close(source_fd)
 `
@@ -586,7 +654,7 @@ func (c *dockerCLIClient) copyToContainer(
 
 	cmd := exec.CommandContext(ctx, dockerBinary,
 		"exec", "-i", containerID,
-		"python3", "-c", dockerCopyInHelper,
+		"python3", "-I", "-c", dockerCopyInHelper,
 		target.Root, target.Relative,
 	)
 	stdin, err := cmd.StdinPipe()
@@ -599,7 +667,7 @@ func (c *dockerCLIClient) copyToContainer(
 		_ = stdin.Close()
 		return fmt.Errorf("docker cp to container: start: %w", err)
 	}
-	_, copyErr := sandboxbroker.CopyBounded(
+	_, copyErr := sandboxbroker.CopyFramedBounded(
 		ctx,
 		stdin,
 		reader,
@@ -663,11 +731,15 @@ func (c *dockerCLIClient) copyFromContainer(
 	if err != nil {
 		return ErrSandboxPolicyDenied
 	}
+	hostDstDir, err = canonicalLegacyCopyDestination(hostDstDir)
+	if err != nil {
+		return err
+	}
 
 	// Produce the tar stream inside the container and extract it incrementally.
 	produce := exec.CommandContext(ctx, dockerBinary,
 		"exec", containerID,
-		"python3", "-c", dockerCopyOutHelper,
+		"python3", "-I", "-c", dockerCopyOutHelper,
 		source.Root, source.Relative, source.ArchiveName,
 	)
 	stdout, err := produce.StdoutPipe()
@@ -697,7 +769,7 @@ func (c *dockerCLIClient) copyFromContainer(
 	}
 	if waitErr != nil {
 		message := stderr.String()
-		if strings.Contains(message, "No such file") || strings.Contains(message, "no such file") {
+		if isInitialCopySourceMissing(waitErr, message) {
 			return nil
 		}
 		return fmt.Errorf(
@@ -707,6 +779,13 @@ func (c *dockerCLIClient) copyFromContainer(
 		)
 	}
 	return nil
+}
+
+func isInitialCopySourceMissing(waitErr error, stderr string) bool {
+	var exitErr *exec.ExitError
+	return errors.As(waitErr, &exitErr) &&
+		exitErr.ExitCode() == dockerCopyInitialSourceMissingExit &&
+		strings.TrimSpace(stderr) == dockerCopyInitialSourceMissingMarker
 }
 
 // ExecMkdir creates `dirs` inside the container using docker exec mkdir -p.
@@ -769,6 +848,27 @@ func canonicalDockerCopyInPath(raw string) (string, error) {
 	return path.Join(target.Root, target.Relative), nil
 }
 
+func canonicalLegacyCopyDestination(raw string) (string, error) {
+	if raw == "" ||
+		!filepath.IsAbs(raw) ||
+		filepath.Clean(raw) != raw ||
+		strings.ContainsRune(raw, 0) {
+		return "", ErrSandboxPolicyDenied
+	}
+	tempRoot := filepath.Clean(os.TempDir())
+	relative, err := filepath.Rel(tempRoot, raw)
+	if err != nil ||
+		relative == ".." ||
+		strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return raw, nil
+	}
+	resolvedTempRoot, err := filepath.EvalSymlinks(tempRoot)
+	if err != nil {
+		return "", fmt.Errorf("resolve trusted temp root: %w", err)
+	}
+	return filepath.Join(resolvedTempRoot, relative), nil
+}
+
 func safeDockerCopyReader(reader io.Reader) (io.ReadCloser, bool) {
 	switch typed := reader.(type) {
 	case *bytes.Buffer:
@@ -779,7 +879,11 @@ func safeDockerCopyReader(reader io.Reader) (io.ReadCloser, bool) {
 		return io.NopCloser(typed), true
 	case *io.PipeReader:
 		return typed, true
-	case io.ReadCloser:
+	case *os.File:
+		info, err := typed.Stat()
+		if err != nil || !info.Mode().IsRegular() {
+			return nil, false
+		}
 		return typed, true
 	default:
 		return nil, false
