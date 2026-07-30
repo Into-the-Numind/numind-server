@@ -38,6 +38,7 @@ bash scripts/cicd/test-sandbox-isolation.sh
 bash scripts/cicd/test-release-preflight.sh
 bash scripts/cicd/test-sandbox-provisioning.sh
 bash scripts/cicd/test-sandbox-artifacts.sh
+NUMIND_SANDBOX_ARTIFACTS_STRICT=1 bash scripts/cicd/test-sandbox-artifacts.sh
 ```
 
 Full S4 gate additionally runs:
@@ -55,7 +56,8 @@ bash scripts/cicd/test-sandbox-capacity.sh
   owner on 2026-07-30: the Seccomp create-to-unlink same-UID race and one
   wrapped-archive off-by-one guard remain recorded and are not counted as
   formally reviewed.
-- Local DockerHub metadata fetch is currently unstable; strict artifact image
-  verification must be rerun on the build server with
-  `NUMIND_SANDBOX_ARTIFACTS_STRICT=1`.
+- Local DockerHub metadata fetch is currently unstable, so local artifact image
+  verification may remain static-only. Build-server strict artifact verification
+  passed on 2026-07-30 with `NUMIND_SANDBOX_ARTIFACTS_STRICT=1` after switching
+  Alpine/Debian/Ubuntu package installs to domestic mirrors by default.
 - No Prod deployment has been executed by this S4 work.

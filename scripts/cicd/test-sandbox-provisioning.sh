@@ -42,13 +42,15 @@ prepare_root() {
 run_provision() {
   local root="$1"
   shift || true
+  local seccomp_hash
+  seccomp_hash="$(sha256sum "$SCRIPT_DIR/../../deploy/sandbox/seccomp.json" | awk '{print $1}')"
   NUMIND_SANDBOX_TEST_MODE=1 \
   NUMIND_SANDBOX_ROOT="$root" \
   NUMIND_SANDBOX_TEST_COMMANDS="slirp4netns newuidmap newgidmap dockerd rootlesskit" \
   NUMIND_SANDBOX_BROKER_INSTANCE=numind-prod-sandbox-primary \
   NUMIND_SANDBOX_API_HOST_UID=1001 \
   NUMIND_SANDBOX_IMAGE_DIGEST="ccr.ccs.tencentyun.com/youshunumind/sandbox-skill@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" \
-  NUMIND_SANDBOX_SECCOMP_SHA256="sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" \
+  NUMIND_SANDBOX_SECCOMP_SHA256="sha256:${seccomp_hash}" \
   NUMIND_SANDBOX_PARENT_MEMORY_MAX_BYTES=2952790016 \
   NUMIND_SANDBOX_WORKLOAD_MEMORY_MAX_BYTES=2415919104 \
   NUMIND_SANDBOX_WORKLOAD_MEMORY_HIGH_BYTES=2147483648 \
@@ -80,6 +82,7 @@ for file in \
   "$ROOT_OK/etc/systemd/system/numind-sandbox-workload.slice.d/10-capacity.conf" \
   "$ROOT_OK/etc/numind-sandbox/sandboxd.yaml" \
   "$ROOT_OK/etc/numind-sandbox/sandboxd.env" \
+  "$ROOT_OK/opt/numind-sandbox/seccomp/seccomp.json" \
   "$ROOT_OK/opt/numind-sandbox/docker-config/daemon.json"
 do
   if [ -f "$file" ]; then
@@ -97,10 +100,25 @@ fi
 
 if grep -Fq "data_root_uuid: 11111111-2222-3333-4444-555555555555" "$ROOT_OK/etc/numind-sandbox/sandboxd.yaml" &&
    grep -Fq "MemoryMax=2952790016" "$ROOT_OK/etc/systemd/system/numind-sandbox.slice.d/10-capacity.conf" &&
-   grep -Fq "MemoryMax=2415919104" "$ROOT_OK/etc/systemd/system/numind-sandbox-workload.slice.d/10-capacity.conf"; then
+   grep -Fq "MemoryMax=2415919104" "$ROOT_OK/etc/systemd/system/numind-sandbox-workload.slice.d/10-capacity.conf" &&
+   grep -Fq "seccomp_path: /opt/numind-sandbox/seccomp/seccomp.json" "$ROOT_OK/etc/numind-sandbox/sandboxd.yaml"; then
   pass "rendered UUID and capacity values"
 else
   fail_test "rendered config should include UUID and capacity values"
+fi
+
+if cmp -s "$SCRIPT_DIR/../../deploy/sandbox/seccomp.json" "$ROOT_OK/opt/numind-sandbox/seccomp/seccomp.json"; then
+  pass "installed seccomp profile for sandboxd"
+else
+  fail_test "seccomp profile should be installed from release bundle"
+fi
+
+if grep -Fq "chown root:numind-sandbox /etc/numind-sandbox/sandboxd.yaml" "$ROOT_OK/tmp/sandbox-provision.log" &&
+   grep -Fq "chown root:numind-sandbox /etc/numind-sandbox/sandboxd.env" "$ROOT_OK/tmp/sandbox-provision.log" &&
+   grep -Fq "chown root:numind-sandbox /opt/numind-sandbox/seccomp/seccomp.json" "$ROOT_OK/tmp/sandbox-provision.log"; then
+  pass "sandboxd config and seccomp ownership allow service user reads"
+else
+  fail_test "sandboxd config/seccomp ownership should be set for service user"
 fi
 
 if grep -Fq "NUMIND_SANDBOX_BROKER_GID=1999" "$TMP/ok.out"; then
@@ -187,6 +205,18 @@ else
   fail_test "floating sandbox image tag should fail closed"
 fi
 
+ROOT_BAD_SECCOMP="$TMP/root-bad-seccomp"
+prepare_root "$ROOT_BAD_SECCOMP"
+set +e
+run_provision "$ROOT_BAD_SECCOMP" NUMIND_SANDBOX_SECCOMP_SHA256="sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" > "$TMP/bad-seccomp.out" 2>&1
+bad_seccomp_rc=$?
+set -e
+if [ "$bad_seccomp_rc" -ne 0 ] && grep -Fq "seccomp profile checksum mismatch" "$TMP/bad-seccomp.out"; then
+  pass "seccomp checksum mismatch fails closed"
+else
+  fail_test "seccomp checksum mismatch should fail closed"
+fi
+
 echo
 if [ "$fail" -ne 0 ]; then
   echo "---- ok output ----"
@@ -201,6 +231,8 @@ if [ "$fail" -ne 0 ]; then
   cat "$TMP/bad-perm.out" 2>/dev/null || true
   echo "---- bad digest output ----"
   cat "$TMP/bad-digest.out" 2>/dev/null || true
+  echo "---- bad seccomp output ----"
+  cat "$TMP/bad-seccomp.out" 2>/dev/null || true
   echo "sandbox provisioning tests FAILED"
   exit 1
 fi

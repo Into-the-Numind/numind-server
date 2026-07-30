@@ -724,6 +724,8 @@ run_sandboxd_deploy() {
   local out="$2"
   local docker_log="$3"
   shift 3 || true
+  local seccomp_hash
+  seccomp_hash="$(sha256sum "$SCRIPT_DIR/../../deploy/sandbox/seccomp.json" | awk '{print $1}')"
   PATH="$SANDBOXD_DEPLOY_BIN:$PATH" \
   FAKE_DOCKER_RUN_LOG="$docker_log" \
   NUMIND_SANDBOX_TEST_MODE=1 \
@@ -736,7 +738,7 @@ run_sandboxd_deploy() {
   NUMIND_SANDBOX_BROKER_INSTANCE=numind-prod-sandbox-primary \
   NUMIND_SANDBOX_API_HOST_UID=1001 \
   NUMIND_SANDBOX_IMAGE_DIGEST="ccr.ccs.tencentyun.com/youshunumind/sandbox-skill@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" \
-  NUMIND_SANDBOX_SECCOMP_SHA256="sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" \
+  NUMIND_SANDBOX_SECCOMP_SHA256="sha256:${seccomp_hash}" \
   NUMIND_SANDBOX_PARENT_MEMORY_MAX_BYTES=2952790016 \
   NUMIND_SANDBOX_WORKLOAD_MEMORY_MAX_BYTES=2415919104 \
   NUMIND_SANDBOX_WORKLOAD_MEMORY_HIGH_BYTES=2147483648 \
@@ -762,10 +764,11 @@ else
 fi
 
 if grep -Fq "sandboxd-new" "$SANDBOXD_SUCCESS_ROOT/opt/numind-sandbox/bin/numind-sandboxd" &&
-   grep -Fq "NUMIND_SANDBOX_BROKER_GID=1999" "$SANDBOXD_SUCCESS_ROOT/tmp/broker.env"; then
+   grep -Fq "NUMIND_SANDBOX_BROKER_GID=1999" "$SANDBOXD_SUCCESS_ROOT/tmp/broker.env" &&
+   [ -f "$SANDBOXD_SUCCESS_ROOT/opt/numind-sandbox/seccomp/seccomp.json" ]; then
   echo "PASS: sandboxd deploy installs new binary and writes broker gid env"
 else
-  echo "FAIL: sandboxd deploy should install new binary and write broker gid env"
+  echo "FAIL: sandboxd deploy should install new binary, seccomp profile, and write broker gid env"
   fail=1
 fi
 

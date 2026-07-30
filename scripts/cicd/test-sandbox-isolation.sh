@@ -60,6 +60,21 @@ assert_grep 'runuser -u "\$SANDBOX_USER" -- test -r "\$path"' scripts/cicd/provi
 assert_grep 'sandbox-skill@sha256' \
   scripts/cicd/provision-sandbox-host.sh \
   "provisioning requires pinned Sandbox image digest"
+assert_grep 'install_seccomp_profile' \
+  scripts/cicd/provision-sandbox-host.sh \
+  "provisioning installs checked seccomp profile"
+assert_grep 'seccomp profile checksum mismatch' \
+  scripts/cicd/test-sandbox-provisioning.sh \
+  "provisioning test covers missing or wrong seccomp profile"
+assert_grep 'ALPINE_MIRROR=https://mirrors\.aliyun\.com/alpine' \
+  Dockerfile \
+  "sandbox artifact build uses domestic Alpine mirror by default"
+assert_grep 'DEBIAN_MIRROR=https://mirrors\.aliyun\.com/debian' \
+  Dockerfile \
+  "server builder uses domestic Debian mirror by default"
+assert_grep 'UBUNTU_MIRROR=https://mirrors\.aliyun\.com/ubuntu' \
+  Dockerfile \
+  "server runtime uses domestic Ubuntu mirror by default"
 assert_grep 'sandboxd must not read config_prod\.yaml' cmd/numind-sandboxd/main.go \
   "sandboxd explicitly rejects prod business config"
 

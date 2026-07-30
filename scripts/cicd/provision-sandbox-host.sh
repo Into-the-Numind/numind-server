@@ -8,6 +8,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 UNIT_SRC_DIR="$REPO_ROOT/deploy/sandbox"
+SECCOMP_SRC="$UNIT_SRC_DIR/seccomp.json"
 
 SANDBOX_USER="${NUMIND_SANDBOX_USER:-numind-sandbox}"
 SANDBOX_GROUP="${NUMIND_SANDBOX_GROUP:-numind-sandbox}"
@@ -44,6 +45,15 @@ log_action() {
   [ "$TEST_MODE" = "1" ] || return 0
   mkdir -p "$(root_path /tmp)"
   printf '%s\n' "$*" >> "$(root_path /tmp/sandbox-provision.log)"
+}
+
+hash_file() {
+  local file="$1"
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$file" | awk '{print $1}'
+  else
+    shasum -a 256 "$file" | awk '{print $1}'
+  fi
 }
 
 require_root() {
@@ -247,10 +257,14 @@ ensure_directories() {
     mkdir -p "$(root_path "$dir")"
   done
   chmod 0750 "$(root_path "$SANDBOX_HOME")"
+  chmod 0750 "$(root_path "$CONFIG_DIR")"
   chmod 02770 "$(root_path "$RUN_DIR")"
   if [ "$TEST_MODE" != "1" ]; then
     chown -R "$SANDBOX_USER:$SANDBOX_GROUP" "$SANDBOX_HOME"
+    chown "root:$SANDBOX_GROUP" "$CONFIG_DIR"
     chown "root:$API_GROUP" "$RUN_DIR"
+  else
+    log_action "chown root:$SANDBOX_GROUP $CONFIG_DIR"
   fi
 }
 
@@ -292,6 +306,16 @@ write_file() {
   mkdir -p "$(dirname "$(root_path "$path")")"
   cat > "$(root_path "$path")"
   chmod "$mode" "$(root_path "$path")"
+}
+
+chown_file() {
+  local path="$1"
+  local owner="$2"
+  if [ "$TEST_MODE" = "1" ]; then
+    log_action "chown $owner $path"
+    return 0
+  fi
+  chown "$owner" "$(root_path "$path")"
 }
 
 install_systemd_units() {
@@ -345,6 +369,18 @@ render_docker_config() {
   "live-restore": false
 }
 EOF
+  chown_file "$SANDBOX_HOME/docker-config/daemon.json" "$SANDBOX_USER:$SANDBOX_GROUP"
+}
+
+install_seccomp_profile() {
+  [ -f "$SECCOMP_SRC" ] || fail "seccomp profile missing: $SECCOMP_SRC"
+  local expected="${NUMIND_SANDBOX_SECCOMP_SHA256#sha256:}"
+  local actual
+  actual="$(hash_file "$SECCOMP_SRC")"
+  [ "$actual" = "$expected" ] || fail "seccomp profile checksum mismatch"
+
+  install -m 0440 "$SECCOMP_SRC" "$(root_path "$SANDBOX_HOME/seccomp/seccomp.json")"
+  chown_file "$SANDBOX_HOME/seccomp/seccomp.json" "root:$SANDBOX_GROUP"
 }
 
 render_sandboxd_config() {
@@ -389,6 +425,7 @@ sandboxd:
     data_root_path: ${DATA_ROOT}
     data_root_uuid: ${uuid}
 EOF
+  chown_file "$CONFIG_DIR/sandboxd.yaml" "root:$SANDBOX_GROUP"
   write_file "$CONFIG_DIR/sandboxd.env" 0640 <<EOF
 NUMIND_SANDBOX_BROKER_INSTANCE=${NUMIND_SANDBOX_BROKER_INSTANCE}
 NUMIND_SANDBOX_API_HOST_UID=${NUMIND_SANDBOX_API_HOST_UID}
@@ -396,6 +433,7 @@ NUMIND_SANDBOX_IMAGE_DIGEST=${NUMIND_SANDBOX_IMAGE_DIGEST}
 NUMIND_SANDBOX_SECCOMP_SHA256=${NUMIND_SANDBOX_SECCOMP_SHA256}
 NUMIND_SANDBOX_DATA_ROOT_UUID=${uuid}
 EOF
+  chown_file "$CONFIG_DIR/sandboxd.env" "root:$SANDBOX_GROUP"
   echo "NUMIND_SANDBOX_BROKER_GID=${api_gid}"
 }
 
@@ -467,6 +505,7 @@ main() {
   install_systemd_units
   render_capacity_dropins
   render_docker_config
+  install_seccomp_profile
   render_sandboxd_config
   verify_negative_permissions
   enable_linger_and_units

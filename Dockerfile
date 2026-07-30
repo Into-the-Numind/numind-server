@@ -9,6 +9,20 @@ ARG ML_BASE_TAG=20260603
 # 构建阶段 - 在容器内编译源码
 FROM golang:1.24-bookworm AS builder
 
+# 构建机在国内，Debian 官方源偶发非常慢；默认走国内镜像，仍允许 build-arg 覆盖。
+ARG DEBIAN_MIRROR=https://mirrors.aliyun.com/debian
+RUN if [ -n "$DEBIAN_MIRROR" ]; then \
+      for source_file in /etc/apt/sources.list /etc/apt/sources.list.d/*.sources; do \
+        [ -f "$source_file" ] || continue; \
+        sed -i \
+          -e "s|http://deb.debian.org/debian|${DEBIAN_MIRROR}|g" \
+          -e "s|https://deb.debian.org/debian|${DEBIAN_MIRROR}|g" \
+          -e "s|http://security.debian.org/debian-security|${DEBIAN_MIRROR}-security|g" \
+          -e "s|https://security.debian.org/debian-security|${DEBIAN_MIRROR}-security|g" \
+          "$source_file"; \
+      done; \
+    fi
+
 # 安装必要的构建工具
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
@@ -51,6 +65,10 @@ RUN CGO_ENABLED=1 GOOS=linux go build -tags sqlite_fts5 -ldflags="-s -w" -o numi
 # available inside the release image for rollback/drain repair.
 FROM golang:1.24-alpine AS sandbox_artifacts
 
+ARG ALPINE_MIRROR=https://mirrors.aliyun.com/alpine
+RUN if [ -n "$ALPINE_MIRROR" ]; then \
+      sed -i "s|https://dl-cdn.alpinelinux.org/alpine|${ALPINE_MIRROR}|g" /etc/apk/repositories; \
+    fi
 RUN apk add --no-cache build-base file
 
 WORKDIR /app
@@ -87,6 +105,20 @@ FROM ccr.ccs.tencentyun.com/youshunumind/numind-ml-base:${ML_BASE_TAG} AS runtim
 # 设置环境变量避免交互式安装（base 已设，此处冗余保留以兼容下方可选的 docker CLI apt 块）
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=Asia/Shanghai
+
+# 构建机在国内，Ubuntu 官方源偶发非常慢；默认走国内镜像，仍允许 build-arg 覆盖。
+ARG UBUNTU_MIRROR=https://mirrors.aliyun.com/ubuntu
+RUN if [ -n "$UBUNTU_MIRROR" ]; then \
+      for source_file in /etc/apt/sources.list /etc/apt/sources.list.d/*.sources; do \
+        [ -f "$source_file" ] || continue; \
+        sed -i \
+          -e "s|http://archive.ubuntu.com/ubuntu|${UBUNTU_MIRROR}|g" \
+          -e "s|https://archive.ubuntu.com/ubuntu|${UBUNTU_MIRROR}|g" \
+          -e "s|http://security.ubuntu.com/ubuntu|${UBUNTU_MIRROR}|g" \
+          -e "s|https://security.ubuntu.com/ubuntu|${UBUNTU_MIRROR}|g" \
+          "$source_file"; \
+      done; \
+    fi
 
 # ffmpeg：视频/音频转写抽音频必需（xhs 视频逐字稿 + monitor/会议）。ML base 不带，运行阶段装。
 RUN apt-get update && \

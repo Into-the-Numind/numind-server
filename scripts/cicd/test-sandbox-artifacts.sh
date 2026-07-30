@@ -83,6 +83,12 @@ cd "$REPO_ROOT"
 
 assert_file_contains "$DOCKERFILE" 'FROM golang:1\.24-alpine AS sandbox_artifacts' \
   "Dockerfile has Alpine/musl sandbox artifact stage"
+assert_file_contains "$DOCKERFILE" 'ALPINE_MIRROR=https://mirrors\.aliyun\.com/alpine' \
+  "sandbox artifact stage defaults to domestic Alpine mirror"
+assert_file_contains "$DOCKERFILE" 'DEBIAN_MIRROR=https://mirrors\.aliyun\.com/debian' \
+  "builder stage defaults to domestic Debian mirror"
+assert_file_contains "$DOCKERFILE" 'UBUNTU_MIRROR=https://mirrors\.aliyun\.com/ubuntu' \
+  "runtime stage defaults to domestic Ubuntu mirror"
 assert_file_contains "$DOCKERFILE" 'go build .*extldflags "-static".*\./cmd/numind-sandboxd' \
   "sandboxd is built static"
 assert_file_contains "$DOCKERFILE" 'go build .*extldflags "-static".*\./cmd/numind-sandbox-reconcile' \
