@@ -5,7 +5,7 @@ features:
   description: Run the Dev-proven Sandbox feature on the existing Prod host while isolating its Docker control plane, networks, secrets, mounts, and resource budget from customer-facing services and data.
   classification_reason: 'Standard: production host container-control security, a separate Sandbox runtime, build/deploy scripts, resource policy, and rollback verification span more than three files and are high risk.'
   last_updated_by: ai-s4-coding
-  last_updated_at: '2026-07-30T11:18:21+0800'
+  last_updated_at: '2026-07-30T12:04:09+0800'
   created_at: '2026-07-30T01:26:00+0800'
   track: standard
   stage: S4
@@ -13,7 +13,7 @@ features:
   repos: [numind-server]
   branches: {numind-server: feature/prod-sandbox-isolation}
   worktrees: {numind-server: /private/tmp/wt-prod-sandbox-isolation-numind-server}
-  progress: {total_tasks: 18, completed_tasks: 6, reviewed_tasks: 5, current_task: 'T7 pressure admission and readiness implementation'}
+  progress: {total_tasks: 18, completed_tasks: 7, reviewed_tasks: 6, current_task: 'T8 journal and Rootless container recovery'}
   artifacts:
     requirement: requirements/prod-sandbox-isolation.md
     proposal: proposals/prod-sandbox-isolation-proposal.md
@@ -25,6 +25,7 @@ features:
     t4_scheduler: .ndf/decisions/prod-sandbox-isolation/0004-t4-global-scheduler.md
     t5_unix_rpc: .ndf/decisions/prod-sandbox-isolation/0005-t5-unix-rpc.md
     t6_prod_capacity: .ndf/decisions/prod-sandbox-isolation/0006-t6-prod-capacity.md
+    t7_pressure_readiness: .ndf/decisions/prod-sandbox-isolation/0007-t7-pressure-readiness.md
     office_hours_design: /Users/zhiyuchen/.gstack/projects/Into-the-Numind-numind-server/zhiyuchen-feature-prod-sandbox-isolation-design-20260730-023436.md
   decisions:
   - 'Use the existing Prod cloud server rather than adding a separate cloud server.'
@@ -63,6 +64,8 @@ features:
   - 'T5 review: final independent static specification and quality reviews PASS 0 P0/0 P1 at commit 6a3aea4c. The product owner explicitly directed this step to skip additional test runs and continue; final package build passed. The previously accepted socket-parent/umask isolation risk remains deferred and Prod/config_prod/databases were untouched.'
   - 'T6: executable Go and isolated CSV calculator enforce recent continuous 7-day history or explicit 72-hour sampling, fixed Shanghai 08:00-23:00 business-window P1, the approved parent/workload formulas, low-capacity release blocking, and sealed ready-only systemd exports.'
   - 'T6 review: final independent specification and quality reviews PASS 0 P0/0 P1/1 P2 at commit fdbe0da2. Go Capacity tests, shell tests, bash syntax, and package go vet pass; full task lint was blocked only while downloading golangci-lint from proxy.golang.org. Prod/config_prod/databases remain untouched.'
+  - 'T7: production admission starts closed; trusted pressure/readiness sampling gates FIFO grants and Ready activation, preserves bounded lifecycle/shed state, separates 429 capacity from 503 infrastructure failures, and prevents closed-gate journal growth.'
+  - 'T7 review: final independent specification and quality reviews PASS 0 P0/0 P1/0 P2 at commit 820341e5. Full sandboxbroker race tests and package/repository go vet pass; task lint stopped only when golangci-lint installation timed out against proxy.golang.org. Prod/config_prod/databases remain untouched.'
   blockers: []
 - id: xhs-analytics-summary-tests
   ndf_version: '3.0'
