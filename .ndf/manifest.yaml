@@ -89,24 +89,94 @@ features:
   ndf_version: '3.0'
   description: Run the Dev-proven Sandbox feature on the existing Prod host while isolating its Docker control plane, networks, secrets, mounts, and resource budget from customer-facing services and data.
   classification_reason: 'Standard: production host container-control security, a separate Sandbox runtime, build/deploy scripts, resource policy, and rollback verification span more than three files and are high risk.'
-  last_updated_by: ai-s0
-  last_updated_at: '2026-07-30T01:33:43+0800'
+  last_updated_by: ai-s5-automatic-verification
+  last_updated_at: '2026-07-30T17:36:09+0800'
+  last_verified: '2026-07-30T17:36:09+0800'
   created_at: '2026-07-30T01:26:00+0800'
   track: standard
-  stage: S0
+  stage: S5
   status: active
   repos: [numind-server]
   branches: {numind-server: feature/prod-sandbox-isolation}
   worktrees: {numind-server: /private/tmp/wt-prod-sandbox-isolation-numind-server}
-  progress: {total_tasks: 0, completed_tasks: 0, reviewed_tasks: 0, current_task: 'S0 requirement captured; human continue-evaluation gate pending'}
+  progress: {total_tasks: 18, completed_tasks: 18, reviewed_tasks: 9, current_task: 'S5 backend/Sandbox automatic verification passed; S6 merge to develop and Dev same-shape product verification pending'}
   artifacts:
     requirement: requirements/prod-sandbox-isolation.md
+    proposal: proposals/prod-sandbox-isolation-proposal.md
+    spec: docs/superpowers/specs/2026-07-30-prod-sandbox-isolation-design.md
+    plan: docs/superpowers/plans/prod-sandbox-isolation-plan.md
+    t1_review: .ndf/decisions/prod-sandbox-isolation/0001-t1-broker-client-review-hardening.md
+    t2_journal: .ndf/decisions/prod-sandbox-isolation/0002-t2-lease-journal.md
+    t3_runtime_stream: .ndf/decisions/prod-sandbox-isolation/0003-t3-runtime-stream.md
+    t4_scheduler: .ndf/decisions/prod-sandbox-isolation/0004-t4-global-scheduler.md
+    t5_unix_rpc: .ndf/decisions/prod-sandbox-isolation/0005-t5-unix-rpc.md
+    t6_prod_capacity: .ndf/decisions/prod-sandbox-isolation/0006-t6-prod-capacity.md
+    t7_pressure_readiness: .ndf/decisions/prod-sandbox-isolation/0007-t7-pressure-readiness.md
+    t8_t9_t11_batch1: .ndf/decisions/prod-sandbox-isolation/0008-t8-t9-t11-batch1-verification.md
+    t10_sandboxd_process: .ndf/decisions/prod-sandbox-isolation/0009-t10-sandboxd-process.md
+    t12_user_api_wiring: .ndf/decisions/prod-sandbox-isolation/0010-t12-user-api-broker-wiring.md
+    t13_admin_composition: .ndf/decisions/prod-sandbox-isolation/0011-t13-admin-lightweight-composition.md
+    t14_deploy_role_contract: .ndf/decisions/prod-sandbox-isolation/0012-t14-deploy-role-contract.md
+    t15_sandbox_artifacts: .ndf/decisions/prod-sandbox-isolation/0013-t15-sandbox-artifacts.md
+    t16_rootless_provisioning: .ndf/decisions/prod-sandbox-isolation/0014-t16-rootless-provisioning.md
+    t17_broker_deploy_runbook: .ndf/decisions/prod-sandbox-isolation/0015-t17-broker-deploy-runbook.md
+    t18_final_security_gate: .ndf/decisions/prod-sandbox-isolation/0016-t18-final-security-gate.md
+    post_review_release_hardening: .ndf/decisions/prod-sandbox-isolation/0017-post-review-release-hardening.md
+    qa: .ndf/features/prod-sandbox-isolation/qa-report.md
+    security_contract: .ndf/features/prod-sandbox-isolation/security-contract.md
+    office_hours_design: /Users/zhiyuchen/.gstack/projects/Into-the-Numind-numind-server/zhiyuchen-feature-prod-sandbox-isolation-design-20260730-023436.md
   decisions:
   - 'Use the existing Prod cloud server rather than adding a separate cloud server.'
   - 'Isolation must prevent the main API Sandbox control path from controlling or reaching production business containers and customer data.'
   - 'QA is out of scope; local verification and Dev acceptance remain required before a separate Prod authorization.'
-  blockers:
-  - 'S0 hard gate: product owner must confirm continuing to feasibility and proposal.'
+  - 'S1: use a dedicated non-login Linux user, a constrained sandboxd broker, and Rootless Docker; the main API receives only the broker socket and no raw Docker socket.'
+  - 'S1: keep pool_min=1, active_task_max=5, and total_container_max=5; standby counts toward total containers while 512 MiB remains a per-task ceiling rather than pre-allocation.'
+  - 'S1: allow five light tasks, but derive Prod parent memory.max from multi-day MemAvailable P1 while reserving 1.25 GiB for core services; 2.75 GiB parent and 2.25 GiB workload values are POC ceilings only.'
+  - 'S1: persist broker leases in a fsync SQLite journal, bound all RPC streams/bytes/connections, reserve a 256/384 MiB control slice plus 128 MiB parent headroom, and ship an API-independent idempotent reconciliation command.'
+  - 'S1 human gate: product owner approved Approach A in chat, meaning the recommended constrained sandboxd + Rootless Docker proposal with active_task_max=5.'
+  - 'S2: only the user API receives the constrained broker socket; admin uses a lightweight composition root and receives no Sandbox broker or Docker access.'
+  - 'S2: preserve the existing Sandbox DockerClient product call paths via an HTTP-over-Unix broker client; broker owns the global five-slot lease journal, fixed container policy, pressure admission, bounded copies, and recovery.'
+  - 'S2 human gate: product owner confirmed the detailed design in chat on 2026-07-30 and authorized implementation to continue; this is not Prod deployment authorization.'
+  - 'S3 review round 1: FAIL with 0 P0, 7 P1, 2 P2; plan was split into 18 independently buildable tasks, capacity evidence/formula became executable, and every task now has a closed file list.'
+  - 'S3 review round 2: PASS with 0 P0, 0 P1, 0 P2; DAG is acyclic and all 18 tasks are independently buildable and verifiable.'
+  - 'T1: broker protocol/config/client implemented without switching any environment; focused tests, race tests, go vet, and task lint pass.'
+  - 'T1 review round 1: both independent reviews FAIL (each 0 P0, 5 P1, 3 P2); warm-lease binding, mutation idempotency, lifecycle, bounded/cancellable streams, strict protocol decoding, file extraction, hard ceilings, and connection cleanup were hardened before re-review.'
+  - 'T1 review round 2 quality: FAIL with 0 P0, 4 P1, 1 P2; pool shutdown joining, previous-boot listing, arbitrary blocking reader rejection, required response semantics, and zero-leak close coverage are being corrected.'
+  - 'T1 review round 2 spec: FAIL with 0 P0, 5 P1, 1 P2 on the same committed snapshot; added ready-state, null/empty response, previous-boot, non-closer, and deterministic in-flight close regressions before round 3.'
+  - 'T1 review round 3 spec: FAIL with 0 P0, 2 P1, 1 P2; replaced hostname identity with an explicit deployment-slot owner, rejected generic ReadCloser wrappers, and made Inspect owner metadata required.'
+  - 'T1 review round 3 quality: FAIL with 0 P0, 2 P1, 2 P2; malformed lease lists and create expiry now fail closed, and active Unix shutdown must prove server-observed cancellation.'
+  - 'T1 review round 4 spec: PASS with 0 P0, 0 P1, 0 P2.'
+  - 'T1 review round 4 quality: FAIL with 0 P0, 1 P1, 0 P2; removed generic os.File copy-in acceptance because Close is not guaranteed to interrupt every blocking file descriptor.'
+  - 'T1 review round 5: both independent reviews PASS with 0 P0, 0 P1, 0 P2 at commit 1209cc09.'
+  - 'T2 review round 1: spec FAIL 0 P0/1 P1/0 P2 and quality FAIL 0 P0/3 P1/3 P2; active leases now have a non-extendable 300-second expiry, reasons are allowlisted codes, private DB/lock/WAL/SHM ownership and inode checks are enforced, schema invariants are stronger, and Close concurrency is covered before re-review.'
+  - 'T2 review round 2: both reviews FAIL with the same 0 P0/1 P1/0 P2 finding; activate replay now excludes the broker-generated absolute expiry from its logical request fingerprint and preserves the first 300-second deadline.'
+  - 'T2 review round 3: both independent reviews PASS with 0 P0, 0 P1, 0 P2 at commit e73605b8.'
+  - 'T3: fixed digest/Seccomp/runtime/exec policy and constant-memory copy primitives implemented; focused and full race tests, twenty repeated focused runs, go vet, and task lint pass.'
+  - 'T3 review round 1: spec FAIL 0 P0/1 P1/2 P2 and quality FAIL 0 P0/5 P1/1 P2; container and host ancestor symlinks, tar option interpretation, Seccomp replacement, blocked writes, legacy reader compatibility, and behavior-level copy coverage were hardened before re-review.'
+  - 'T3 review round 2: spec PASS 0 P0/0 P1/2 P2, but quality FAIL 0 P0/4 P1/1 P2; Seccomp now crosses the Docker execution boundary through a pinned anonymous fd, Python helpers use isolated mode, copy-in requires a framed terminal digest, missing source uses an exact exit contract, and helper traversal has its own fixed depth/entry/file/byte ceilings.'
+  - 'T3 review round 3: spec PASS 0 P0/0 P1/1 P2; quality FAIL 0 P0/1 P1/1 P2 because the anonymous Seccomp file has a very short create-to-unlink same-UID race and a wrapped output archive can exceed the host header limit by one.'
+  - 'T3 gate exception: on 2026-07-30 the product owner explicitly directed the rollout to stop changing the isolation issue and continue forward. The Seccomp race and fail-closed wrapped-archive off-by-one remain recorded residual risks; T3 is complete but not counted as formally reviewed.'
+  - 'T4: one broker-wide scheduler enforces five total containers, five active tasks, strict FIFO, a 30-second wait, cancellation, cross-owner sharing, idempotent replay, a 32-request queue ceiling, and a 4096-record replay ceiling with incremental expiry cleanup.'
+  - 'T4 review: final independent static spec review PASS 0 P0/0 P1/2 P2 and quality review PASS 0 P0/0 P1/2 P2 at commit 4fdbcbb7. The product owner explicitly directed no further T4 test runs; go vet passed, while the earlier task lint retry was blocked only by the golangci-lint download network timeout.'
+  - 'T5: Unix-only HTTP RPC, Linux peer UID authorization, strict metadata, lifecycle idempotency, 32-connection/4-copy-stream limits, shared 100 MiB/s rate, 300-second socket deadlines, copy-out completion signaling, and independent failure cleanup implemented. The concrete fixed ContainerRuntime adapter is explicitly owned by T10.'
+  - 'T5 review: final independent static specification and quality reviews PASS 0 P0/0 P1 at commit 6a3aea4c. The product owner explicitly directed this step to skip additional test runs and continue; final package build passed. The previously accepted socket-parent/umask isolation risk remains deferred and Prod/config_prod/databases were untouched.'
+  - 'T6: executable Go and isolated CSV calculator enforce recent continuous 7-day history or explicit 72-hour sampling, fixed Shanghai 08:00-23:00 business-window P1, the approved parent/workload formulas, low-capacity release blocking, and sealed ready-only systemd exports.'
+  - 'T6 review: final independent specification and quality reviews PASS 0 P0/0 P1/1 P2 at commit fdbe0da2. Go Capacity tests, shell tests, bash syntax, and package go vet pass; full task lint was blocked only while downloading golangci-lint from proxy.golang.org. Prod/config_prod/databases remain untouched.'
+  - 'T7: production admission starts closed; trusted pressure/readiness sampling gates FIFO grants and Ready activation, preserves bounded lifecycle/shed state, separates 429 capacity from 503 infrastructure failures, and prevents closed-gate journal growth.'
+  - 'T7 review: final independent specification and quality reviews PASS 0 P0/0 P1/0 P2 at commit 820341e5. Full sandboxbroker race tests and package/repository go vet pass; task lint stopped only when golangci-lint installation timed out against proxy.golang.org. Prod/config_prod/databases remain untouched.'
+  - 'T8/T9/T11 batch: recovery, health/ready/metrics/audit, and the independent dry-run-by-default reconcile command are implemented. T11 uses a small Unix-socket-only recovery endpoint instead of reading the broker SQLite file, touches only broker-reported pending rows, refunds reservations through the existing credit service, and marks broker leases complete only after app DB cleanup succeeds.'
+  - 'T8/T9/T11 review: quick quality review PASS, initial spec recheck found 5 P1 that were fixed, final reviewer recheck PASS. Focused race tests, go test ./..., and task lint all passed; task lint required GOPROXY=https://goproxy.cn,direct and PATH including GOPATH/bin after proxy.golang.org/PATH issues.'
+  - 'T10: numind-sandboxd composition root, fixed Docker runtime adapter, Linux pressure/readiness probes, sampling watchdog, and 300-second shutdown drain are implemented. config_prod.yaml is rejected by the daemon, Prod data/server were untouched, focused race tests, Linux compile checks, go test ./..., and task lint all passed.'
+  - 'T12: user API Sandbox wiring now selects disabled/docker/broker backends explicitly, no longer constructs the direct Docker CLI client for broker mode, activates broker leases only after the durable audit row exists, and degrades broker config/runtime failures without blocking NewBiz. Focused race tests, package race tests, go test ./..., and task lint passed.'
+  - 'T13: admin API now uses a lightweight NewAdminBiz composition root, keeps Agent Run cancellation DB-only with a nil in-memory runner, and no longer initializes user-side Sandbox/Agent/Feishu/document/memory/XHS runtime. Focused race tests, related race tests, go test ./..., and task lint passed.'
+  - 'T14: prod deploy-remote now enforces the role contract: user API may mount only sandboxd.sock plus a dedicated broker GID when backend=broker and must provide a stable broker owner ID; disabled mode gets no socket/group; admin is forced to sandbox.backend=disabled and gets no broker or Docker access. Preflight fake Docker assertions, deploy-replace-race regression, bash syntax, git diff --check, and config_prod.yaml unchanged checks passed.'
+  - 'T15: server image now builds/carries numind-sandboxd, numind-sandbox-reconcile, and sandbox-artifacts.sha256; build-and-push prints artifact checksums; prod still passes WITH_DOCKER_CLI=false so the API image does not install Docker CLI. Local shell/static artifact checks and command package tests passed; real Docker build was blocked by DockerHub token-fetch timeout and is reserved for strict build-server verification.'
+  - 'T16: rootless host provisioning now creates/validates the same-host Sandbox base through a non-login sandbox user, dedicated API socket group, 8GiB ext4 data-root image, cgroup v2/controller checks, systemd slices/drop-ins, pinned sandbox image digest, sandboxd config/env rendering, broker gid output, and Prod path negative permission checks. Fake-root provisioning tests, bash syntax, git diff --check, and config_prod.yaml unchanged checks passed.'
+  - 'T17: broker deployment automation now provisions the host, extracts/checksums sandboxd and reconcile from the server image, drains old broker, atomically replaces binaries, verifies /healthz and /readyz, restores old binaries and runs reconcile dry-run on readiness failure, forwards NUMIND_SANDBOX_* through release/deploy to Prod, and documents the runbook. Preflight fake remote success/failure rollback, provisioning/artifact scripts, deploy replace race, command package tests, bash syntax, git diff --check, and config_prod.yaml unchanged checks passed. deploy.sh was added to the file set because it is the required build-server-to-Prod environment bridge.'
+  - 'T18: final integration/security gate added Go and shell contracts for five-slot FIFO, fixed 512MiB/1CPU/64PIDs runtime limits, no Docker socket/capability escape, broker Unix transport ceilings, deploy/provision/artifact contracts, and config_prod immutability. T18 found a real seccomp_sha256 prefix mismatch in T16/T17 config generation; it was fixed in separate commit 90a2b1ae before T18 resumed. Focused gate scripts, go test ./..., race tests, task lint, and config_prod unchanged checks passed; artifact image build remains static-only locally due DockerHub metadata timeout and must be strict-verified on the build server.'
+  - 'S4 post-review release hardening: independent backend release review found two Prod blockers before deployment: sandboxd could not read root-owned config/env files, and the checked seccomp profile was not installed with the broker unit bundle. Both were fixed with provisioning ownership checks and a bundled deploy/sandbox/seccomp.json checksum contract. Dockerfile package installs now default to domestic Alpine/Debian/Ubuntu mirrors so build-server strict verification does not hang on slow package sources. Local gates passed, config_prod.yaml remained unchanged, and build-server NUMIND_SANDBOX_ARTIFACTS_STRICT=1 bash scripts/cicd/test-sandbox-artifacts.sh passed on 2026-07-30.'
+  - 'S5 automatic verification: backend/Sandbox gates passed on the feature worktree without touching Prod or config_prod.yaml: task test, task lint with GOPATH/bin in PATH, sandbox capacity/provisioning/release-preflight/isolation/artifact scripts, targeted Sandbox race tests, and build-server strict artifact image verification. Frontend/E2E/browser QA are N/A for this backend-only worktree and remain product-level S6 Dev verification after ndf-done/deploy-dev.'
+  blockers: []
 - id: xhs-analytics-summary-tests
   ndf_version: '3.0'
   description: Keep XHS Script daily analytics in the China calendar day during the 00:00-07:59 local window so deployment tests and daily product metrics do not report zeros.

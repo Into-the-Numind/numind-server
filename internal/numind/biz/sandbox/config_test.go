@@ -37,6 +37,27 @@ func TestDefaultSandboxConfig_Defaults(t *testing.T) {
 	if cfg.UserSpec != "1000:1000" {
 		t.Errorf("default UserSpec = %q; want 1000:1000", cfg.UserSpec)
 	}
+	if cfg.BrokerSocket != "/run/numind-sandbox/sandboxd.sock" {
+		t.Errorf("default BrokerSocket = %q", cfg.BrokerSocket)
+	}
+	if cfg.BrokerOwnerID != "" {
+		t.Errorf("default BrokerOwnerID = %q; want explicit empty fail-closed value", cfg.BrokerOwnerID)
+	}
+	if cfg.BrokerMetadataMaxBytes != 64<<10 {
+		t.Errorf("default BrokerMetadataMaxBytes = %d; want %d", cfg.BrokerMetadataMaxBytes, 64<<10)
+	}
+	if cfg.BrokerExecOutputMaxBytes != 4<<20 {
+		t.Errorf("default BrokerExecOutputMaxBytes = %d; want %d", cfg.BrokerExecOutputMaxBytes, 4<<20)
+	}
+	if cfg.BrokerCopyInMaxBytes != 100<<20 || cfg.BrokerCopyOutMaxBytes != 200<<20 {
+		t.Errorf("default broker copy limits = in:%d out:%d", cfg.BrokerCopyInMaxBytes, cfg.BrokerCopyOutMaxBytes)
+	}
+	if cfg.BrokerSingleFileMaxBytes != 50<<20 {
+		t.Errorf("default BrokerSingleFileMaxBytes = %d; want %d", cfg.BrokerSingleFileMaxBytes, 50<<20)
+	}
+	if cfg.BrokerMaxFiles != 10 || cfg.BrokerMaxConnections != 32 {
+		t.Errorf("default broker count limits = files:%d connections:%d", cfg.BrokerMaxFiles, cfg.BrokerMaxConnections)
+	}
 }
 
 func TestLoadFromViper_NilReturnsDefault(t *testing.T) {
@@ -98,23 +119,32 @@ func (f *fakeViper) GetDuration(key string) time.Duration {
 
 func TestLoadFromViper_OverridesDefaults(t *testing.T) {
 	v := newFakeViper(map[string]any{
-		"sandbox.backend":                 "docker",
-		"sandbox.pool_min":                10,
-		"sandbox.pool_max_wait_ms":        60000,
-		"sandbox.image_tag":               "python:3.12-slim",
-		"sandbox.memory_limit_mb":         1024,
-		"sandbox.cpu_quota":               2.0,
-		"sandbox.pids_limit":              128,
-		"sandbox.timeout_seconds":         60,
-		"sandbox.session_timeout_seconds": 600,
-		"sandbox.network_policy":          "none",
-		"sandbox.allowed_domains":         []string{"api.youshu.asia"},
-		"sandbox.workdir_size_mb":         1024,
-		"sandbox.read_only_rootfs":        false,
-		"sandbox.capabilities":            []string{"NET_ADMIN", "NET_BIND_SERVICE"},
-		"sandbox.seccomp_profile":         "/etc/seccomp.json",
-		"sandbox.apparmor_profile":        "myprofile",
-		"sandbox.user_spec":               "1234:1234",
+		"sandbox.backend":                      "docker",
+		"sandbox.pool_min":                     10,
+		"sandbox.pool_max_wait_ms":             60000,
+		"sandbox.image_tag":                    "python:3.12-slim",
+		"sandbox.memory_limit_mb":              1024,
+		"sandbox.cpu_quota":                    2.0,
+		"sandbox.pids_limit":                   128,
+		"sandbox.timeout_seconds":              60,
+		"sandbox.session_timeout_seconds":      600,
+		"sandbox.network_policy":               "none",
+		"sandbox.allowed_domains":              []string{"api.youshu.asia"},
+		"sandbox.workdir_size_mb":              1024,
+		"sandbox.read_only_rootfs":             false,
+		"sandbox.capabilities":                 []string{"NET_ADMIN", "NET_BIND_SERVICE"},
+		"sandbox.seccomp_profile":              "/etc/seccomp.json",
+		"sandbox.apparmor_profile":             "myprofile",
+		"sandbox.user_spec":                    "1234:1234",
+		"sandbox.broker_socket":                "/tmp/test-sandboxd.sock",
+		"sandbox.broker_owner_id":              "api-primary",
+		"sandbox.broker_metadata_max_bytes":    32768,
+		"sandbox.broker_exec_output_max_bytes": 1048576,
+		"sandbox.broker_copy_in_max_bytes":     2097152,
+		"sandbox.broker_copy_out_max_bytes":    4194304,
+		"sandbox.broker_single_file_max_bytes": 524288,
+		"sandbox.broker_max_files":             5,
+		"sandbox.broker_max_connections":       12,
 	})
 	cfg := LoadFromViper(v)
 	if cfg.Backend != BackendDocker {
@@ -155,6 +185,22 @@ func TestLoadFromViper_OverridesDefaults(t *testing.T) {
 	}
 	if cfg.UserSpec != "1234:1234" {
 		t.Errorf("UserSpec = %q; want 1234:1234", cfg.UserSpec)
+	}
+	if cfg.BrokerSocket != "/tmp/test-sandboxd.sock" {
+		t.Errorf("BrokerSocket = %q", cfg.BrokerSocket)
+	}
+	if cfg.BrokerOwnerID != "api-primary" {
+		t.Errorf("BrokerOwnerID = %q", cfg.BrokerOwnerID)
+	}
+	if cfg.BrokerMetadataMaxBytes != 32768 || cfg.BrokerExecOutputMaxBytes != 1048576 {
+		t.Errorf("broker response limits = metadata:%d exec:%d", cfg.BrokerMetadataMaxBytes, cfg.BrokerExecOutputMaxBytes)
+	}
+	if cfg.BrokerCopyInMaxBytes != 2097152 || cfg.BrokerCopyOutMaxBytes != 4194304 {
+		t.Errorf("broker copy limits = in:%d out:%d", cfg.BrokerCopyInMaxBytes, cfg.BrokerCopyOutMaxBytes)
+	}
+	if cfg.BrokerSingleFileMaxBytes != 524288 || cfg.BrokerMaxFiles != 5 || cfg.BrokerMaxConnections != 12 {
+		t.Errorf("broker count limits = single:%d files:%d connections:%d",
+			cfg.BrokerSingleFileMaxBytes, cfg.BrokerMaxFiles, cfg.BrokerMaxConnections)
 	}
 }
 

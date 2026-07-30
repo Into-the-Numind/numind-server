@@ -306,8 +306,12 @@ func NewBiz(ds store.IStore) *biz {
 	// platform skills (xlsx/docx/pptx/pdf-author) are unavailable (graceful degradation).
 	sandboxLogger := &sandboxZapLogger{}
 	sandboxConfig := sandbox.LoadFromViper(viper.GetViper())
-	dockerClient := sandbox.NewDockerCLIClient(sandboxLogger)
-	sandboxPool := sandbox.NewPool(sandboxConfig, dockerClient, sandboxLogger)
+	sandboxPool, sandboxPoolErr := sandbox.NewPoolFromConfig(sandboxConfig, sandboxLogger)
+	if sandboxPoolErr != nil {
+		log.Warnw("sandbox pool degraded to disabled",
+			"backend", string(sandboxConfig.Backend),
+			"error", sandboxPoolErr)
+	}
 	sandboxHookManager := agent.NewSandboxHookManager(sandboxPool, ds.AgentSandboxSessions())
 	agent.SetDefaultHookManager(sandboxHookManager)
 

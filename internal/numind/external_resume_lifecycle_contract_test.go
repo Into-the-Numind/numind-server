@@ -41,10 +41,7 @@ func TestProductionHTTPRoutesAndReclaimerShareOneBizInstance(t *testing.T) {
 }
 
 func TestProductionControllersReuseEntrypointBizWhenAvailable(t *testing.T) {
-	for _, name := range []string{
-		"admin_router.go",
-		"controller/v1/user/user.go",
-	} {
+	for _, name := range []string{"controller/v1/user/user.go"} {
 		raw, err := os.ReadFile(name)
 		if err != nil {
 			t.Fatal(err)
@@ -52,5 +49,19 @@ func TestProductionControllersReuseEntrypointBizWhenAvailable(t *testing.T) {
 		if !strings.Contains(string(raw), "b := biz.B") {
 			t.Fatalf("%s must prefer the entrypoint-owned Biz instead of creating an independent sandbox pool", name)
 		}
+	}
+}
+
+func TestAdminRouterUsesLightweightAdminBiz(t *testing.T) {
+	raw, err := os.ReadFile("admin_router.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(raw)
+	if strings.Contains(source, "biz.NewBiz(") {
+		t.Fatal("admin_router.go must not initialize the full user-side Biz/Sandbox runtime")
+	}
+	if !strings.Contains(source, "biz.NewAdminBiz(store.S)") {
+		t.Fatal("admin_router.go must use the lightweight admin composition root")
 	}
 }

@@ -49,6 +49,7 @@ require (
 	github.com/wcharczuk/go-chart/v2 v2.1.2
 	github.com/wechatpay-apiv3/wechatpay-go v0.2.21
 	github.com/yanyiwu/gojieba v1.4.6
+	golang.org/x/sys v0.38.0
 	gonum.org/v1/plot v0.17.0
 	gopkg.in/yaml.v3 v3.0.1
 	gorm.io/datatypes v1.2.7
@@ -132,7 +133,6 @@ require (
 	golang.org/x/arch v0.18.0 // indirect
 	golang.org/x/exp v0.0.0-20230713183714-613f0c0eb8a1 // indirect
 	golang.org/x/net v0.47.0 // indirect
-	golang.org/x/sys v0.38.0 // indirect
 	golang.org/x/text v0.31.0 // indirect
 	google.golang.org/protobuf v1.36.6 // indirect
 )

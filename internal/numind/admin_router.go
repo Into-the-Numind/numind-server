@@ -58,10 +58,7 @@ func installAdminRouters(g *gin.Engine) error {
 
 	billingCtrl := admin_billing.New(store.S)
 
-	b := biz.B
-	if b == nil {
-		b = biz.NewBiz(store.S)
-	}
+	b := biz.NewAdminBiz(store.S)
 	sopCtrl := admin_sop.NewSopController(b.Sop())
 	adminCreditCtrl := admin_credit.New(b.Credit(), store.S)
 	adminMembershipSvc := membership.NewMembershipService(store.S.DB())
@@ -257,7 +254,7 @@ func installAdminRouters(g *gin.Engine) error {
 
 	// Agent Run Admin — M-C3b force-cancel + M-C4a listing (2 endpoints)
 	{
-		agentAdminSvc := agentbiz.NewAgentAdminService(store.S.AgentRuns(), b.Agents())
+		agentAdminSvc := agentbiz.NewAgentAdminService(store.S.AgentRuns(), nil)
 		agentRunCtl := admin.NewAgentRunController(agentAdminSvc)
 		arGroup := adminGroup.Group("/agent-runs")
 		arGroup.GET("", agentRunCtl.List)

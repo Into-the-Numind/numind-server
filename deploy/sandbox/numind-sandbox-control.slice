@@ -1,0 +1,12 @@
+[Unit]
+Description=Numind Sandbox broker/control slice
+Documentation=internal Numind prod sandbox isolation
+Before=slices.target
+
+[Slice]
+CPUAccounting=yes
+MemoryAccounting=yes
+TasksAccounting=yes
+IOAccounting=yes
+CPUQuota=400%
+TasksMax=576

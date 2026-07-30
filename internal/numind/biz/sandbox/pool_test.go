@@ -220,13 +220,47 @@ func TestPool_Close_DestroysWarmContainers(t *testing.T) {
 	if err := p.Close(); err != nil {
 		t.Errorf("Close err = %v", err)
 	}
-	// Allow worker exit
-	time.Sleep(50 * time.Millisecond)
-	// Most warm containers should now be destroyed by Close. (Worker may
-	// have a half-spawned one in flight; we accept ≤ 1 leftover.)
 	afterAlive := mock.CountAliveContainers()
-	if afterAlive > 1 {
-		t.Errorf("after Close: alive = %d; want ≤ 1", afterAlive)
+	if afterAlive != 0 {
+		t.Errorf("after Close: alive = %d; want 0", afterAlive)
+	}
+}
+
+func TestPool_CloseWaitsForInflightSpawnAndLeavesNoContainer(t *testing.T) {
+	cfg := DefaultSandboxConfig
+	cfg.Backend = BackendDocker
+	cfg.PoolMin = 1
+
+	dc := &blockingSpawnDockerClient{
+		MockDockerClient: NewMockDockerClient(),
+		started:          make(chan struct{}),
+		release:          make(chan struct{}),
+	}
+	p := NewPool(cfg, dc, nil)
+	select {
+	case <-dc.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("spawn did not start")
+	}
+
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- p.Close() }()
+	select {
+	case err := <-closeDone:
+		t.Fatalf("Close returned before in-flight spawn exited: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(dc.release)
+	select {
+	case err := <-closeDone:
+		if err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close did not join in-flight spawn")
+	}
+	if got := dc.CountAliveContainers(); got != 0 {
+		t.Fatalf("after Close: alive = %d; want 0", got)
 	}
 }
 
@@ -421,4 +455,17 @@ func TestBuildSpawnArgs_LabelAndKeepAlive(t *testing.T) {
 	if !strings.HasSuffix(joined, "sleep infinity") {
 		t.Errorf("spawn args must keep the container alive with 'sleep infinity'; got: %s", joined)
 	}
+}
+
+type blockingSpawnDockerClient struct {
+	*MockDockerClient
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (c *blockingSpawnDockerClient) Spawn(ctx context.Context, cfg SpawnConfig) (string, error) {
+	c.once.Do(func() { close(c.started) })
+	<-c.release
+	return c.MockDockerClient.Spawn(ctx, cfg)
 }

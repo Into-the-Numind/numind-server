@@ -1,17 +1,22 @@
 package sandbox
 
 import (
-	"archive/tar"
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"path"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
+
+	"numind-server/internal/numind/sandboxbroker"
 )
 
 // DockerClient is the minimal Docker primitive interface. The real impl
@@ -24,15 +29,13 @@ type DockerClient interface {
 	Inspect(ctx context.Context, containerID string) (InspectResult, error)
 
 	// CopyToContainer writes `content` into the container at `dstPath`.
-	// Implemented via `docker exec -i <CID> tar -xf - -C <dir>` (NOT `docker cp` —
-	// see the impl comment for the Docker 28.x tmpfs bug). Track 4: used by
-	// CopyFileIn to inject input files into /workdir/input/ and by AcquireForSkill
-	// to stage skill files into /skills/<name>/.
+	// It streams through a fixed Docker exec command with bounded memory.
+	// Track 4: used by CopyFileIn to inject input files into /workdir/input/
+	// and by AcquireForSkill to stage skill files into /skills/<name>/.
 	CopyToContainer(ctx context.Context, containerID, dstPath string, content io.Reader) error
 
 	// CopyFromContainer copies `srcPath` from the container into `hostDstDir`.
-	// Implemented via `docker exec <CID> tar -cf -` piped through host `tar -xf -`
-	// (NOT `docker cp` — same Docker 28.x tmpfs bug applies in both directions).
+	// It incrementally validates and extracts a bounded tar stream in Go.
 	// Track 4: used by CollectOutputs to pull /workdir/output/ files.
 	CopyFromContainer(ctx context.Context, containerID, srcPath, hostDstDir string) error
 
@@ -112,6 +115,281 @@ type InspectResult struct {
 
 // dockerBinary returns the docker CLI binary name; var so tests can override.
 var dockerBinary = "docker"
+
+const (
+	dockerCopyInitialSourceMissingExit   = 44
+	dockerCopyInitialSourceMissingMarker = "NUMIND_COPY_INITIAL_SOURCE_MISSING"
+)
+
+const dockerCopyInHelper = `
+import hashlib
+import os
+import secrets
+import struct
+import sys
+
+def parts(value):
+    items = value.split("/")
+    if not items or any(
+        item in ("", ".", "..") or "/" in item or "\x00" in item
+        for item in items
+    ):
+        raise ValueError("unsafe relative path")
+    return items
+
+def read_exact(size):
+    chunks = []
+    remaining = size
+    while remaining:
+        chunk = sys.stdin.buffer.read(remaining)
+        if not chunk:
+            raise EOFError("copy-in ended before completion frame")
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    return b"".join(chunks)
+
+def open_parent(root, relative):
+    items = parts(relative)
+    current = os.open(
+        root,
+        os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+    )
+    try:
+        for item in items[:-1]:
+            next_fd = os.open(
+                item,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+                dir_fd=current,
+            )
+            os.close(current)
+            current = next_fd
+        return current, items[-1]
+    except BaseException:
+        os.close(current)
+        raise
+
+if len(sys.argv) != 3:
+    raise ValueError("invalid copy-in arguments")
+parent_fd, leaf = open_parent(sys.argv[1], sys.argv[2])
+temporary = ""
+file_fd = -1
+try:
+    for _ in range(32):
+        candidate = ".numind-copy-" + secrets.token_hex(16)
+        try:
+            file_fd = os.open(
+                candidate,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL |
+                os.O_CLOEXEC | os.O_NOFOLLOW,
+                0o600,
+                dir_fd=parent_fd,
+            )
+            temporary = candidate
+            break
+        except FileExistsError:
+            pass
+    if file_fd < 0:
+        raise FileExistsError("cannot allocate temporary copy target")
+    digest = hashlib.sha256()
+    total = 0
+    while True:
+        header = read_exact(4)
+        frame_size = struct.unpack(">I", header)[0]
+        if frame_size == 0:
+            break
+        if frame_size > 65536 or total + frame_size > 50 * 1024 * 1024:
+            raise ValueError("copy-in frame exceeds fixed limits")
+        chunk = read_exact(frame_size)
+        digest.update(chunk)
+        total += frame_size
+        view = memoryview(chunk)
+        while view:
+            written = os.write(file_fd, view)
+            if written <= 0:
+                raise OSError("copy-in write made no progress")
+            view = view[written:]
+    expected_digest = read_exact(32)
+    if expected_digest != digest.digest():
+        raise ValueError("copy-in completion digest mismatch")
+    os.fsync(file_fd)
+    os.close(file_fd)
+    file_fd = -1
+    os.link(
+        temporary,
+        leaf,
+        src_dir_fd=parent_fd,
+        dst_dir_fd=parent_fd,
+        follow_symlinks=False,
+    )
+    os.unlink(temporary, dir_fd=parent_fd)
+    temporary = ""
+finally:
+    if file_fd >= 0:
+        os.close(file_fd)
+    if temporary:
+        try:
+            os.unlink(temporary, dir_fd=parent_fd)
+        except FileNotFoundError:
+            pass
+    os.close(parent_fd)
+`
+
+const dockerCopyOutHelper = `
+import os
+import posixpath
+import stat
+import sys
+import tarfile
+
+MAX_DEPTH = 16
+MAX_ENTRIES = 56
+MAX_FILES = 10
+MAX_SINGLE_BYTES = 50 * 1024 * 1024
+MAX_TOTAL_BYTES = 200 * 1024 * 1024
+SOURCE_MISSING_EXIT = 44
+SOURCE_MISSING_MARKER = "NUMIND_COPY_INITIAL_SOURCE_MISSING"
+
+def parts(value):
+    items = value.split("/")
+    if not items or any(
+        item in ("", ".", "..") or "/" in item or "\x00" in item
+        for item in items
+    ):
+        raise ValueError("unsafe relative path")
+    return items
+
+def open_child(parent_fd, name, directory):
+    before = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    if directory and not stat.S_ISDIR(before.st_mode):
+        raise ValueError("non-directory path component")
+    if not directory and not (
+        stat.S_ISDIR(before.st_mode) or stat.S_ISREG(before.st_mode)
+    ):
+        raise ValueError("unsupported output file type")
+    if stat.S_ISREG(before.st_mode) and before.st_nlink != 1:
+        raise ValueError("hardlinked output is not allowed")
+    flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK
+    if directory:
+        flags |= os.O_DIRECTORY
+    child = os.open(name, flags, dir_fd=parent_fd)
+    after = os.fstat(child)
+    if before.st_dev != after.st_dev or before.st_ino != after.st_ino:
+        os.close(child)
+        raise ValueError("output changed during traversal")
+    if directory and not stat.S_ISDIR(after.st_mode):
+        os.close(child)
+        raise ValueError("non-directory path component")
+    if not directory and not (
+        stat.S_ISDIR(after.st_mode) or stat.S_ISREG(after.st_mode)
+    ):
+        os.close(child)
+        raise ValueError("unsupported output file type")
+    if stat.S_ISREG(after.st_mode) and after.st_nlink != 1:
+        os.close(child)
+        raise ValueError("hardlinked output is not allowed")
+    return child
+
+def open_relative(root, relative):
+    current = os.open(
+        root,
+        os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+    )
+    try:
+        items = parts(relative)
+        for item in items[:-1]:
+            next_fd = open_child(current, item, True)
+            os.close(current)
+            current = next_fd
+        result = open_child(current, items[-1], False)
+        os.close(current)
+        return result
+    except BaseException:
+        os.close(current)
+        raise
+
+def tar_info(name, metadata):
+    info = tarfile.TarInfo(name)
+    info.uid = 1000
+    info.gid = 1000
+    info.uname = ""
+    info.gname = ""
+    info.mtime = 0
+    if stat.S_ISDIR(metadata.st_mode):
+        info.type = tarfile.DIRTYPE
+        info.mode = 0o700
+        info.size = 0
+    elif stat.S_ISREG(metadata.st_mode):
+        if metadata.st_nlink != 1:
+            raise ValueError("hardlinked output is not allowed")
+        info.type = tarfile.REGTYPE
+        info.mode = 0o600
+        info.size = metadata.st_size
+    else:
+        raise ValueError("unsupported output file type")
+    return info
+
+def emit(archive, fd, archive_name, depth, counters):
+    if depth > MAX_DEPTH:
+        raise ValueError("output directory depth exceeds fixed limit")
+    metadata = os.fstat(fd)
+    if stat.S_ISREG(metadata.st_mode):
+        if not archive_name:
+            raise ValueError("regular file requires archive name")
+        if metadata.st_nlink != 1:
+            raise ValueError("hardlinked output is not allowed")
+        if metadata.st_size > MAX_SINGLE_BYTES:
+            raise ValueError("output file exceeds fixed limit")
+        counters["files"] += 1
+        counters["bytes"] += metadata.st_size
+        if counters["files"] > MAX_FILES or counters["bytes"] > MAX_TOTAL_BYTES:
+            raise ValueError("output aggregate exceeds fixed limit")
+        with os.fdopen(os.dup(fd), "rb", closefd=True) as source:
+            archive.addfile(tar_info(archive_name, metadata), source)
+        return
+    if not stat.S_ISDIR(metadata.st_mode):
+        raise ValueError("unsupported output file type")
+    if archive_name:
+        archive.addfile(tar_info(archive_name, metadata))
+    with os.scandir(fd) as entries:
+        for entry in entries:
+            counters["entries"] += 1
+            if counters["entries"] > MAX_ENTRIES:
+                raise ValueError("output entry count exceeds fixed limit")
+            name = entry.name
+            if name in ("", ".", "..") or "/" in name or "\x00" in name:
+                raise ValueError("unsafe output name")
+            child = open_child(fd, name, False)
+            try:
+                nested_name = posixpath.join(archive_name, name) if archive_name else name
+                emit(archive, child, nested_name, depth + 1, counters)
+            finally:
+                os.close(child)
+
+if len(sys.argv) != 4:
+    raise ValueError("invalid copy-out arguments")
+try:
+    source_fd = open_relative(sys.argv[1], sys.argv[2])
+except FileNotFoundError:
+    sys.stderr.write(SOURCE_MISSING_MARKER + "\n")
+    sys.exit(SOURCE_MISSING_EXIT)
+try:
+    if not sys.argv[3] and not stat.S_ISDIR(os.fstat(source_fd).st_mode):
+        raise ValueError("contents-only source must be a directory")
+    with tarfile.open(
+        fileobj=sys.stdout.buffer,
+        mode="w|",
+        format=tarfile.PAX_FORMAT,
+    ) as archive:
+        emit(
+            archive,
+            source_fd,
+            sys.argv[3],
+            0,
+            {"entries": 0, "files": 0, "bytes": 0},
+        )
+finally:
+    os.close(source_fd)
+`
 
 // dockerCLIClient implements DockerClient by exec'ing the host "docker"
 // binary. Requires:
@@ -246,7 +524,10 @@ func (c *dockerCLIClient) Exec(ctx context.Context, containerID string, cmd []st
 
 	start := time.Now()
 	execCmd := exec.CommandContext(ctx, dockerBinary, args...)
-	stdoutBuf, stderrBuf, exitCode, runErr := runWithCapture(execCmd)
+	stdoutBuf, stderrBuf, exitCode, outputExceeded, runErr := runWithCapture(
+		execCmd,
+		sandboxbroker.MaxExecOutputBytes,
+	)
 	dur := time.Since(start)
 
 	res := ExecResult{
@@ -254,6 +535,12 @@ func (c *dockerCLIClient) Exec(ctx context.Context, containerID string, cmd []st
 		Stderr:   stderrBuf,
 		ExitCode: exitCode,
 		Duration: dur,
+	}
+	if outputExceeded {
+		return res, ErrOutputTooLarge
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return res, fmt.Errorf("docker exec: %w", ctxErr)
 	}
 	if runErr != nil && exitCode == 0 {
 		// runErr is something other than a non-zero exit (e.g. ctx cancel)
@@ -333,69 +620,89 @@ func (c *dockerCLIClient) ListByLabel(ctx context.Context, label string) ([]stri
 
 // CopyToContainer writes `content` as a file at `dstPath` inside the container.
 //
-// Implementation uses `docker exec -i <CID> tar -xf - -C <dir>` with an in-memory
-// tar archive on stdin. This deliberately AVOIDS `docker cp`, which in Docker 28.x
-// is broken for tmpfs mounts under `--read-only` rootfs: it fails with
-// `Error response from daemon: Could not find the file <path> in container`
-// even when the path exists and is writable via `docker exec`. Verified on dev
-// 2026-05-29 — both /workdir and /skills (the sandbox's writable tmpfs mounts)
-// trigger the bug. `docker exec` uses a different daemon code path and works.
+// Implementation streams directly to a fixed shell redirection with a 64 KiB
+// buffer. This deliberately avoids both docker cp (broken for Docker 28.x
+// tmpfs under a read-only rootfs) and the old io.ReadAll + in-memory tar path.
 //
 // The parent directory of dstPath must already exist in the container; callers
 // stage it via ExecMkdir.
 func (c *dockerCLIClient) CopyToContainer(ctx context.Context, containerID, dstPath string, content io.Reader) error {
-	data, err := io.ReadAll(content)
-	if err != nil {
-		return fmt.Errorf("docker cp to container: read content: %w", err)
-	}
+	return c.copyToContainer(
+		ctx,
+		containerID,
+		dstPath,
+		content,
+		sandboxbroker.MaxSingleFileBytes,
+	)
+}
 
-	buf, err := buildSingleFileTar(path.Base(dstPath), data)
+func (c *dockerCLIClient) copyToContainer(
+	ctx context.Context,
+	containerID string,
+	dstPath string,
+	content io.Reader,
+	maxBytes int64,
+) error {
+	target, err := canonicalDockerCopyInTarget(dstPath)
 	if err != nil {
-		return fmt.Errorf("docker cp to container: %w", err)
+		return err
+	}
+	reader, ok := safeDockerCopyReader(content)
+	if !ok {
+		return ErrSandboxPolicyDenied
 	}
 
 	cmd := exec.CommandContext(ctx, dockerBinary,
 		"exec", "-i", containerID,
-		"tar", "-xf", "-", "-C", path.Dir(dstPath),
+		"python3", "-I", "-c", dockerCopyInHelper,
+		target.Root, target.Relative,
 	)
-	cmd.Stdin = buf
-	out, err := cmd.CombinedOutput()
+	stdin, err := cmd.StdinPipe()
 	if err != nil {
-		return fmt.Errorf("docker cp to container: exec tar: %w (output=%s)", err, string(out))
+		return fmt.Errorf("docker cp to container: stdin: %w", err)
+	}
+	stderr := newLimitedTextBuffer(64 << 10)
+	cmd.Stderr = stderr
+	if err := cmd.Start(); err != nil {
+		_ = stdin.Close()
+		return fmt.Errorf("docker cp to container: start: %w", err)
+	}
+	_, copyErr := sandboxbroker.CopyFramedBounded(
+		ctx,
+		stdin,
+		reader,
+		maxBytes,
+		sandboxbroker.ErrStreamInputTooLarge,
+	)
+	if copyErr != nil {
+		_ = cmd.Process.Kill()
+		_ = stdin.Close()
+		_ = cmd.Wait()
+		return mapDockerStreamError(copyErr)
+	}
+	closeErr := stdin.Close()
+	waitErr := cmd.Wait()
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+	if closeErr != nil {
+		return fmt.Errorf("docker cp to container: close stream: %w", closeErr)
+	}
+	if waitErr != nil {
+		return fmt.Errorf(
+			"docker cp to container: stream: %w (stderr=%s)",
+			waitErr,
+			stderr.String(),
+		)
 	}
 	return nil
 }
 
-// buildSingleFileTar returns a tar archive containing one regular file at
-// `name` (relative path) with the given bytes. Extracted via `tar -xf - -C <dir>`,
-// the file lands at <dir>/<name>. Extracted for unit-test reachability of the
-// tar-encoding logic without invoking docker.
-func buildSingleFileTar(name string, data []byte) (*bytes.Buffer, error) {
-	var buf bytes.Buffer
-	tw := tar.NewWriter(&buf)
-	if err := tw.WriteHeader(&tar.Header{
-		Name:    name,
-		Mode:    0o644,
-		Size:    int64(len(data)),
-		ModTime: time.Now(),
-	}); err != nil {
-		return nil, fmt.Errorf("tar header: %w", err)
-	}
-	if _, err := tw.Write(data); err != nil {
-		return nil, fmt.Errorf("tar body: %w", err)
-	}
-	if err := tw.Close(); err != nil {
-		return nil, fmt.Errorf("tar close: %w", err)
-	}
-	return &buf, nil
-}
-
 // CopyFromContainer copies `srcPath` from the container into `hostDstDir`.
 //
-// Like CopyToContainer, this uses `docker exec <CID> tar -cf -` + a host-side
-// `tar -xf -` instead of `docker cp`, which is broken for tmpfs mounts under
-// `--read-only` rootfs in Docker 28.x (fails in BOTH directions — verified on
-// dev 2026-05-29 with `/workdir/output` and `/skills/*`).
+// Like CopyToContainer, this avoids docker cp. It streams `docker exec tar`
+// directly through the descriptor-relative Go extractor, so output is never
+// buffered in memory or delegated to a host tar process.
 //
 // Mirrors docker cp's "/." suffix semantics:
 //   - srcPath = "/workdir/output"   → hostDstDir/output/<files>  (dir wrapped)
@@ -404,45 +711,81 @@ func buildSingleFileTar(name string, data []byte) (*bytes.Buffer, error) {
 // A missing srcPath returns nil (the caller — eg CollectOutputs — treats an
 // empty output directory as legitimate when the Python script produced nothing).
 func (c *dockerCLIClient) CopyFromContainer(ctx context.Context, containerID, srcPath, hostDstDir string) error {
-	var tarSrcDir, tarSrcEntry string
-	if strings.HasSuffix(srcPath, "/.") {
-		tarSrcDir = strings.TrimSuffix(srcPath, "/.")
-		tarSrcEntry = "."
-	} else {
-		tarSrcDir = path.Dir(srcPath)
-		tarSrcEntry = path.Base(srcPath)
+	return c.copyFromContainer(
+		ctx,
+		containerID,
+		srcPath,
+		hostDstDir,
+		sandboxbroker.DefaultCopyOutLimits(),
+	)
+}
+
+func (c *dockerCLIClient) copyFromContainer(
+	ctx context.Context,
+	containerID string,
+	srcPath string,
+	hostDstDir string,
+	limits sandboxbroker.StreamLimits,
+) error {
+	source, err := sandboxbroker.CanonicalCopyOutPath(srcPath)
+	if err != nil {
+		return ErrSandboxPolicyDenied
+	}
+	hostDstDir, err = canonicalLegacyCopyDestination(hostDstDir)
+	if err != nil {
+		return err
 	}
 
-	// Produce the tar stream inside the container.
-	var stdoutBuf, stderrBuf bytes.Buffer
+	// Produce the tar stream inside the container and extract it incrementally.
 	produce := exec.CommandContext(ctx, dockerBinary,
 		"exec", containerID,
-		"tar", "-cf", "-", "-C", tarSrcDir, tarSrcEntry,
+		"python3", "-I", "-c", dockerCopyOutHelper,
+		source.Root, source.Relative, source.ArchiveName,
 	)
-	produce.Stdout = &stdoutBuf
-	produce.Stderr = &stderrBuf
-	if err := produce.Run(); err != nil {
-		s := stderrBuf.String()
-		if strings.Contains(s, "No such file") || strings.Contains(s, "no such file") {
+	stdout, err := produce.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("docker cp from container: stdout: %w", err)
+	}
+	stderr := newLimitedTextBuffer(64 << 10)
+	produce.Stderr = stderr
+	if err := produce.Start(); err != nil {
+		return fmt.Errorf("docker cp from container: start: %w", err)
+	}
+	_, extractErr := sandboxbroker.ExtractTarStream(
+		ctx,
+		stdout,
+		hostDstDir,
+		limits,
+	)
+	if extractErr != nil {
+		_ = produce.Process.Kill()
+	}
+	waitErr := produce.Wait()
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+	if extractErr != nil {
+		return mapDockerStreamError(extractErr)
+	}
+	if waitErr != nil {
+		message := stderr.String()
+		if isInitialCopySourceMissing(waitErr, message) {
 			return nil
 		}
-		return fmt.Errorf("docker cp from container: source tar: %w (stderr=%s)", err, s)
-	}
-
-	// Empty stdout = nothing to extract. Avoids invoking host tar with empty input,
-	// which on some implementations errors with "This does not look like a tar archive".
-	if stdoutBuf.Len() == 0 {
-		return nil
-	}
-
-	// Extract the tar stream into hostDstDir using the host's `tar` binary
-	// (present in both Ubuntu base images we run — numind-server runtime + dev/qa/prod hosts).
-	extract := exec.CommandContext(ctx, "tar", "-xf", "-", "-C", hostDstDir)
-	extract.Stdin = &stdoutBuf
-	if out, err := extract.CombinedOutput(); err != nil {
-		return fmt.Errorf("docker cp from container: extract tar: %w (output=%s)", err, string(out))
+		return fmt.Errorf(
+			"docker cp from container: source tar: %w (stderr=%s)",
+			waitErr,
+			message,
+		)
 	}
 	return nil
+}
+
+func isInitialCopySourceMissing(waitErr error, stderr string) bool {
+	var exitErr *exec.ExitError
+	return errors.As(waitErr, &exitErr) &&
+		exitErr.ExitCode() == dockerCopyInitialSourceMissingExit &&
+		strings.TrimSpace(stderr) == dockerCopyInitialSourceMissingMarker
 }
 
 // ExecMkdir creates `dirs` inside the container using docker exec mkdir -p.
@@ -467,16 +810,115 @@ func captureStderr(err error) string {
 	return ""
 }
 
-// runWithCapture runs cmd, captures stdout/stderr separately, and returns
-// the exit code. A non-zero exit code is NOT returned as an error from
-// this helper; the caller treats it as data.
-func runWithCapture(cmd *exec.Cmd) (stdout, stderr string, exitCode int, err error) {
-	var outBuf, errBuf strings.Builder
-	cmd.Stdout = &outBuf
-	cmd.Stderr = &errBuf
+type dockerCopyInTarget struct {
+	Root     string
+	Relative string
+}
+
+func canonicalDockerCopyInTarget(raw string) (dockerCopyInTarget, error) {
+	if strings.HasPrefix(path.Clean(raw), "/skills/") {
+		parts := strings.Split(strings.TrimPrefix(path.Clean(raw), "/skills/"), "/")
+		if len(parts) < 2 {
+			return dockerCopyInTarget{}, ErrSandboxPolicyDenied
+		}
+		clean, err := sandboxbroker.CanonicalCopyInPath(raw, []string{parts[0]})
+		if err != nil {
+			return dockerCopyInTarget{}, ErrSandboxPolicyDenied
+		}
+		return dockerCopyInTarget{
+			Root:     "/skills",
+			Relative: strings.TrimPrefix(clean, "/skills/"),
+		}, nil
+	}
+	clean, err := sandboxbroker.CanonicalCopyInPath(raw, nil)
+	if err != nil {
+		return dockerCopyInTarget{}, ErrSandboxPolicyDenied
+	}
+	return dockerCopyInTarget{
+		Root:     "/workdir",
+		Relative: strings.TrimPrefix(clean, "/workdir/"),
+	}, nil
+}
+
+func canonicalDockerCopyInPath(raw string) (string, error) {
+	target, err := canonicalDockerCopyInTarget(raw)
+	if err != nil {
+		return "", err
+	}
+	return path.Join(target.Root, target.Relative), nil
+}
+
+func canonicalLegacyCopyDestination(raw string) (string, error) {
+	if raw == "" ||
+		!filepath.IsAbs(raw) ||
+		filepath.Clean(raw) != raw ||
+		strings.ContainsRune(raw, 0) {
+		return "", ErrSandboxPolicyDenied
+	}
+	tempRoot := filepath.Clean(os.TempDir())
+	relative, err := filepath.Rel(tempRoot, raw)
+	if err != nil ||
+		relative == ".." ||
+		strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return raw, nil
+	}
+	resolvedTempRoot, err := filepath.EvalSymlinks(tempRoot)
+	if err != nil {
+		return "", fmt.Errorf("resolve trusted temp root: %w", err)
+	}
+	return filepath.Join(resolvedTempRoot, relative), nil
+}
+
+func safeDockerCopyReader(reader io.Reader) (io.ReadCloser, bool) {
+	switch typed := reader.(type) {
+	case *bytes.Buffer:
+		return io.NopCloser(typed), true
+	case *bytes.Reader:
+		return io.NopCloser(typed), true
+	case *strings.Reader:
+		return io.NopCloser(typed), true
+	case *io.PipeReader:
+		return typed, true
+	case *os.File:
+		info, err := typed.Stat()
+		if err != nil || !info.Mode().IsRegular() {
+			return nil, false
+		}
+		return typed, true
+	default:
+		return nil, false
+	}
+}
+
+func mapDockerStreamError(err error) error {
+	switch {
+	case errors.Is(err, sandboxbroker.ErrStreamInputTooLarge):
+		return ErrInputTooLarge
+	case errors.Is(err, sandboxbroker.ErrStreamOutputTooLarge):
+		return ErrOutputTooLarge
+	case errors.Is(err, sandboxbroker.ErrStreamPolicyDenied):
+		return ErrSandboxPolicyDenied
+	default:
+		return err
+	}
+}
+
+// runWithCapture runs cmd with a shared stdout+stderr ceiling. A non-zero exit
+// code remains result data; output overflow kills the command and is reported
+// separately.
+func runWithCapture(
+	cmd *exec.Cmd,
+	maxBytes int64,
+) (stdout string, stderr string, exitCode int, exceeded bool, err error) {
+	capture := newCombinedCapture(maxBytes, func() {
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+	})
+	cmd.Stdout = capture.stdoutWriter()
+	cmd.Stderr = capture.stderrWriter()
 	err = cmd.Run()
-	stdout = outBuf.String()
-	stderr = errBuf.String()
+	stdout, stderr, exceeded = capture.snapshot()
 	if err == nil {
 		exitCode = 0
 		return
@@ -491,4 +933,90 @@ func runWithCapture(cmd *exec.Cmd) (stdout, stderr string, exitCode int, err err
 	// it as-is. exitCode is irrelevant in that case.
 	exitCode = -1
 	return
+}
+
+type limitedTextBuffer struct {
+	mu        sync.Mutex
+	remaining int64
+	builder   strings.Builder
+}
+
+func newLimitedTextBuffer(maxBytes int64) *limitedTextBuffer {
+	return &limitedTextBuffer{remaining: maxBytes}
+}
+
+func (b *limitedTextBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	allowed := int64(len(p))
+	if allowed > b.remaining {
+		allowed = b.remaining
+	}
+	if allowed > 0 {
+		_, _ = b.builder.Write(p[:allowed])
+		b.remaining -= allowed
+	}
+	return len(p), nil
+}
+
+func (b *limitedTextBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.builder.String()
+}
+
+type combinedCapture struct {
+	mu        sync.Mutex
+	remaining int64
+	stdout    strings.Builder
+	stderr    strings.Builder
+	exceeded  bool
+	killOnce  sync.Once
+	kill      func()
+}
+
+type combinedCaptureWriter struct {
+	capture *combinedCapture
+	stderr  bool
+}
+
+func newCombinedCapture(maxBytes int64, kill func()) *combinedCapture {
+	return &combinedCapture{remaining: maxBytes, kill: kill}
+}
+
+func (c *combinedCapture) stdoutWriter() io.Writer {
+	return combinedCaptureWriter{capture: c}
+}
+
+func (c *combinedCapture) stderrWriter() io.Writer {
+	return combinedCaptureWriter{capture: c, stderr: true}
+}
+
+func (w combinedCaptureWriter) Write(p []byte) (int, error) {
+	w.capture.mu.Lock()
+	allowed := int64(len(p))
+	if allowed > w.capture.remaining {
+		allowed = w.capture.remaining
+		w.capture.exceeded = true
+	}
+	if allowed > 0 {
+		if w.stderr {
+			_, _ = w.capture.stderr.Write(p[:allowed])
+		} else {
+			_, _ = w.capture.stdout.Write(p[:allowed])
+		}
+		w.capture.remaining -= allowed
+	}
+	exceeded := w.capture.exceeded
+	w.capture.mu.Unlock()
+	if exceeded {
+		w.capture.killOnce.Do(w.capture.kill)
+	}
+	return len(p), nil
+}
+
+func (c *combinedCapture) snapshot() (string, string, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.stdout.String(), c.stderr.String(), c.exceeded
 }

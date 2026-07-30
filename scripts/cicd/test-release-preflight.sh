@@ -11,6 +11,7 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 RELEASE_SH="$SCRIPT_DIR/release.sh"
 DEPLOY_REMOTE_SH="$SCRIPT_DIR/deploy-remote.sh"
+DEPLOY_SANDBOX_REMOTE_SH="$SCRIPT_DIR/deploy-sandboxd-remote.sh"
 SECRET_HYGIENE_SH="$(cd "$SCRIPT_DIR/.." && pwd)/check_prod_secret_hygiene.sh"
 PROD_SECRETS_ENV_SH="$(cd "$SCRIPT_DIR/.." && pwd)/check_prod_secrets_env.sh"
 DOCKERIGNORE="$(cd "$SCRIPT_DIR/../.." && pwd)/.dockerignore"
@@ -19,12 +20,14 @@ die() { echo "test setup error: $1" >&2; exit 2; }
 
 [ -f "$RELEASE_SH" ] || die "release.sh not found at $RELEASE_SH"
 [ -f "$DEPLOY_REMOTE_SH" ] || die "deploy-remote.sh not found at $DEPLOY_REMOTE_SH"
+[ -f "$DEPLOY_SANDBOX_REMOTE_SH" ] || die "deploy-sandboxd-remote.sh not found at $DEPLOY_SANDBOX_REMOTE_SH"
 [ -f "$SECRET_HYGIENE_SH" ] || die "check_prod_secret_hygiene.sh not found at $SECRET_HYGIENE_SH"
 [ -f "$PROD_SECRETS_ENV_SH" ] || die "check_prod_secrets_env.sh not found at $PROD_SECRETS_ENV_SH"
 [ -f "$DOCKERIGNORE" ] || die ".dockerignore not found at $DOCKERIGNORE"
 
 TMP="$(mktemp -d)" || die "mktemp"
-trap 'rm -rf "$TMP"' EXIT
+SOCKET_TMP="$(mktemp -d /tmp/numind-sandbox-preflight.XXXXXX)" || die "mktemp socket tmp"
+trap 'rm -rf "$TMP" "$SOCKET_TMP"' EXIT
 
 mkdir -p "$TMP/bin" "$TMP/locks" || die "mkdir temp dirs"
 
@@ -452,6 +455,29 @@ DOCKER
 chmod +x "$DEPLOY_REMOTE_BIN/docker" || die "chmod fake deploy-remote docker"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$DEPLOY_REMOTE_BIN/curl" || die "write fake deploy-remote curl"
 chmod +x "$DEPLOY_REMOTE_BIN/curl" || die "chmod fake deploy-remote curl"
+cat > "$DEPLOY_REMOTE_BIN/sudo" <<'SUDO' || die "write fake deploy-remote sudo"
+#!/usr/bin/env bash
+case "${1:-}" in
+  mkdir|chown|chmod)
+    exit 0
+    ;;
+  *)
+    exec "$@"
+    ;;
+esac
+SUDO
+chmod +x "$DEPLOY_REMOTE_BIN/sudo" || die "chmod fake deploy-remote sudo"
+
+make_unix_socket() {
+  local socket_path="$1"
+  python3 - "$socket_path" <<'PY'
+import socket
+import sys
+s = socket.socket(socket.AF_UNIX)
+s.bind(sys.argv[1])
+s.close()
+PY
+}
 
 ADMIN_SECRETS_FILE="$TMP/admin-prod-secrets.env"
 printf 'NUMIND_FAKE_SECRET=\n' > "$ADMIN_SECRETS_FILE" || die "write fake admin secrets file"
@@ -462,6 +488,10 @@ ADMIN_DOCKER_RUN_LOG="$TMP/admin-docker-run.log"
   ENV=prod TARGET=admin IMAGE="example.invalid/numind-admin:prod-test" \
   SECRETS_FILE="$ADMIN_SECRETS_FILE" \
   REQUIRE_PROD_SECRETS_ENV=0 \
+  NUMIND_SANDBOX_BACKEND=broker \
+  NUMIND_SANDBOX_BROKER_SOCKET=/var/run/docker.sock \
+  NUMIND_SANDBOX_BROKER_OWNER_ID=admin-should-not-use \
+  NUMIND_SANDBOX_BROKER_GID=1999 \
     bash "$DEPLOY_REMOTE_SH"
 ) > "$TMP/admin-deploy-remote.out" 2>&1
 admin_deploy_remote_rc=$?
@@ -484,6 +514,294 @@ if grep -Fq "Secrets: $ADMIN_SECRETS_FILE (loaded)" "$TMP/admin-deploy-remote.ou
   echo "PASS: prod admin deploy output reports loaded secrets env-file"
 else
   echo "FAIL: prod admin deploy output missing loaded secrets env-file"
+  fail=1
+fi
+
+if grep -Fq -- "-e NUMIND_SANDBOX_BACKEND=disabled" "$ADMIN_DOCKER_RUN_LOG"; then
+  echo "PASS: prod admin docker run forces Sandbox disabled"
+else
+  echo "FAIL: prod admin docker run should force Sandbox disabled"
+  fail=1
+fi
+
+if grep -Eq -- 'docker\.sock|sandboxd\.sock|--group-add' "$ADMIN_DOCKER_RUN_LOG"; then
+  echo "FAIL: prod admin docker run must not mount broker/Docker socket or add Sandbox group"
+  fail=1
+else
+  echo "PASS: prod admin docker run has no broker/Docker socket or Sandbox group"
+fi
+
+SERVER_BROKER_SOCKET="$SOCKET_TMP/sandboxd.sock"
+make_unix_socket "$SERVER_BROKER_SOCKET" || die "create fake broker socket"
+SERVER_BROKER_SECRETS_FILE="$TMP/server-broker-prod-secrets.env"
+printf 'NUMIND_FAKE_SECRET=\n' > "$SERVER_BROKER_SECRETS_FILE" || die "write fake server broker secrets file"
+SERVER_BROKER_DOCKER_RUN_LOG="$TMP/server-broker-docker-run.log"
+(
+  PATH="$DEPLOY_REMOTE_BIN:$PATH" \
+  FAKE_DOCKER_RUN_LOG="$SERVER_BROKER_DOCKER_RUN_LOG" \
+  ENV=prod TARGET=server IMAGE="example.invalid/numind-server:broker-test" \
+  SECRETS_FILE="$SERVER_BROKER_SECRETS_FILE" \
+  REQUIRE_PROD_SECRETS_ENV=0 \
+  NUMIND_SANDBOX_BACKEND=broker \
+  NUMIND_SANDBOX_BROKER_SOCKET="$SERVER_BROKER_SOCKET" \
+  NUMIND_SANDBOX_BROKER_OWNER_ID=numind-user-api-primary \
+  NUMIND_SANDBOX_BROKER_GID=1999 \
+    bash "$DEPLOY_REMOTE_SH"
+) > "$TMP/server-broker-deploy-remote.out" 2>&1
+server_broker_deploy_rc=$?
+
+if [ "$server_broker_deploy_rc" -eq 0 ]; then
+  echo "PASS: prod server broker deploy-remote succeeds with fake docker"
+else
+  echo "FAIL: prod server broker deploy-remote should succeed with fake docker (rc=$server_broker_deploy_rc)"
+  fail=1
+fi
+
+if grep -Fq -- "-e NUMIND_SANDBOX_BACKEND=broker" "$SERVER_BROKER_DOCKER_RUN_LOG" &&
+   grep -Fq -- "-e NUMIND_SANDBOX_BROKER_SOCKET=$SERVER_BROKER_SOCKET" "$SERVER_BROKER_DOCKER_RUN_LOG" &&
+   grep -Fq -- "-e NUMIND_SANDBOX_BROKER_OWNER_ID=numind-user-api-primary" "$SERVER_BROKER_DOCKER_RUN_LOG"; then
+  echo "PASS: prod server broker docker run injects Sandbox broker env"
+else
+  echo "FAIL: prod server broker docker run missing broker env"
+  fail=1
+fi
+
+if grep -Fq -- "-v $SERVER_BROKER_SOCKET:$SERVER_BROKER_SOCKET" "$SERVER_BROKER_DOCKER_RUN_LOG" &&
+   grep -Fq -- "--group-add 1999" "$SERVER_BROKER_DOCKER_RUN_LOG"; then
+  echo "PASS: prod server broker docker run mounts only broker socket with dedicated group"
+else
+  echo "FAIL: prod server broker docker run missing broker socket mount or dedicated group"
+  fail=1
+fi
+
+if grep -Fq -- "docker.sock" "$SERVER_BROKER_DOCKER_RUN_LOG"; then
+  echo "FAIL: prod server broker docker run must not mount a Docker socket"
+  fail=1
+else
+  echo "PASS: prod server broker docker run has no Docker socket"
+fi
+
+SERVER_DISABLED_DOCKER_RUN_LOG="$TMP/server-disabled-docker-run.log"
+(
+  PATH="$DEPLOY_REMOTE_BIN:$PATH" \
+  FAKE_DOCKER_RUN_LOG="$SERVER_DISABLED_DOCKER_RUN_LOG" \
+  ENV=prod TARGET=server IMAGE="example.invalid/numind-server:disabled-test" \
+  SECRETS_FILE="$SERVER_BROKER_SECRETS_FILE" \
+  REQUIRE_PROD_SECRETS_ENV=0 \
+  NUMIND_SANDBOX_BACKEND=disabled \
+    bash "$DEPLOY_REMOTE_SH"
+) > "$TMP/server-disabled-deploy-remote.out" 2>&1
+server_disabled_deploy_rc=$?
+
+if [ "$server_disabled_deploy_rc" -eq 0 ]; then
+  echo "PASS: prod server disabled deploy-remote succeeds without broker socket"
+else
+  echo "FAIL: prod server disabled deploy-remote should succeed without broker socket (rc=$server_disabled_deploy_rc)"
+  fail=1
+fi
+
+if grep -Fq -- "-e NUMIND_SANDBOX_BACKEND=disabled" "$SERVER_DISABLED_DOCKER_RUN_LOG" &&
+   ! grep -Eq -- 'docker\.sock|sandboxd\.sock|--group-add' "$SERVER_DISABLED_DOCKER_RUN_LOG"; then
+  echo "PASS: prod server disabled docker run has no broker/Docker socket or Sandbox group"
+else
+  echo "FAIL: prod server disabled docker run should be Sandbox-disabled and socket-free"
+  fail=1
+fi
+
+SERVER_DOCKER_SOCKET_DOCKER_RUN_LOG="$TMP/server-docker-socket-docker-run.log"
+(
+  PATH="$DEPLOY_REMOTE_BIN:$PATH" \
+  FAKE_DOCKER_RUN_LOG="$SERVER_DOCKER_SOCKET_DOCKER_RUN_LOG" \
+  ENV=prod TARGET=server IMAGE="example.invalid/numind-server:dangerous-socket-test" \
+  SECRETS_FILE="$SERVER_BROKER_SECRETS_FILE" \
+  REQUIRE_PROD_SECRETS_ENV=0 \
+  NUMIND_SANDBOX_BACKEND=broker \
+  NUMIND_SANDBOX_BROKER_SOCKET=/var/run/docker.sock \
+  NUMIND_SANDBOX_BROKER_OWNER_ID=numind-user-api-primary \
+  NUMIND_SANDBOX_BROKER_GID=1999 \
+    bash "$DEPLOY_REMOTE_SH"
+) > "$TMP/server-docker-socket-deploy-remote.out" 2>&1
+server_docker_socket_deploy_rc=$?
+
+if [ "$server_docker_socket_deploy_rc" -ne 0 ] &&
+   grep -Fq "never a Docker socket" "$TMP/server-docker-socket-deploy-remote.out"; then
+  echo "PASS: prod server broker deploy rejects Docker socket path"
+else
+  echo "FAIL: prod server broker deploy should reject Docker socket path"
+  fail=1
+fi
+
+if grep -Eq '^pull( |$)|^run( |$)' "$SERVER_DOCKER_SOCKET_DOCKER_RUN_LOG" 2>/dev/null; then
+  echo "FAIL: prod server Docker-socket rejection should happen before docker pull/run"
+  fail=1
+else
+  echo "PASS: prod server Docker-socket rejection happens before docker pull/run"
+fi
+
+SANDBOXD_DEPLOY_BIN="$TMP/sandboxd-deploy-bin"
+mkdir -p "$SANDBOXD_DEPLOY_BIN" || die "mkdir sandboxd deploy bin"
+cat > "$SANDBOXD_DEPLOY_BIN/docker" <<'DOCKER' || die "write fake sandboxd docker"
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${FAKE_DOCKER_RUN_LOG:?}"
+hash_file() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  else
+    shasum -a 256 "$1" | awk '{print $1}'
+  fi
+}
+case "${1:-}" in
+  pull)
+    exit 0
+    ;;
+  create)
+    echo "fake-sandboxd-container"
+    exit 0
+    ;;
+  cp)
+    src="${2:-}"
+    dest="${3:-}"
+    mkdir -p "$(dirname "$dest")"
+    case "$src" in
+      *:/app/numind-sandboxd)
+        printf '#!/usr/bin/env sh\necho sandboxd-new "$@"\n' > "$dest"
+        chmod +x "$dest"
+        ;;
+      *:/app/numind-sandbox-reconcile)
+        printf '#!/usr/bin/env sh\necho reconcile-new "$@"\n' > "$dest"
+        chmod +x "$dest"
+        ;;
+      *:/app/sandbox-artifacts.sha256)
+        dir="$(dirname "$dest")"
+        printf '%s  /out/numind-sandboxd\n' "$(hash_file "$dir/numind-sandboxd")" > "$dest"
+        printf '%s  /out/numind-sandbox-reconcile\n' "$(hash_file "$dir/numind-sandbox-reconcile")" >> "$dest"
+        ;;
+      *)
+        echo "unexpected docker cp source: $src" >&2
+        exit 1
+        ;;
+    esac
+    exit 0
+    ;;
+  rm|image)
+    exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+DOCKER
+chmod +x "$SANDBOXD_DEPLOY_BIN/docker" || die "chmod fake sandboxd docker"
+
+prepare_sandboxd_root() {
+  local root="$1"
+  mkdir -p "$root/sys/fs/cgroup" \
+           "$root/opt/numind/prod" \
+           "$root/opt/numind/config" \
+           "$root/etc/ssl/certimate/youshu.asia" \
+           "$root/var/lib/mysql" \
+           "$root/var/lib/redis" \
+           "$root/var/lib/docker" \
+           "$root/var/run" \
+           "$root/opt/numind-sandbox/bin" || die "prepare sandboxd fake root"
+  printf 'memory cpu pids io\n' > "$root/sys/fs/cgroup/cgroup.controllers" || die "sandboxd cgroup"
+  printf 'fake docker socket\n' > "$root/var/run/docker.sock" || die "sandboxd fake docker socket"
+  printf 'secret\n' > "$root/opt/numind/prod/secrets.env" || die "sandboxd fake secret"
+  chmod 700 "$root/opt/numind/prod" \
+            "$root/opt/numind/config" \
+            "$root/etc/ssl/certimate/youshu.asia" \
+            "$root/var/lib/mysql" \
+            "$root/var/lib/redis" \
+            "$root/var/lib/docker" || die "sandboxd chmod protected dirs"
+  chmod 600 "$root/var/run/docker.sock" "$root/opt/numind/prod/secrets.env" || die "sandboxd chmod protected files"
+  printf '#!/usr/bin/env sh\necho sandboxd-old "$@"\n' > "$root/opt/numind-sandbox/bin/numind-sandboxd" || die "old sandboxd"
+  printf '#!/usr/bin/env sh\necho reconcile-old "$@"\n' > "$root/opt/numind-sandbox/bin/numind-sandbox-reconcile" || die "old reconcile"
+  chmod +x "$root/opt/numind-sandbox/bin/numind-sandboxd" "$root/opt/numind-sandbox/bin/numind-sandbox-reconcile" || die "chmod old binaries"
+}
+
+run_sandboxd_deploy() {
+  local root="$1"
+  local out="$2"
+  local docker_log="$3"
+  shift 3 || true
+  local seccomp_hash
+  seccomp_hash="$(sha256sum "$SCRIPT_DIR/../../deploy/sandbox/seccomp.json" | awk '{print $1}')"
+  PATH="$SANDBOXD_DEPLOY_BIN:$PATH" \
+  FAKE_DOCKER_RUN_LOG="$docker_log" \
+  NUMIND_SANDBOX_TEST_MODE=1 \
+  NUMIND_SANDBOX_DEPLOY_ROOT="$root" \
+  NUMIND_SANDBOX_BROKER_ENV_FILE="$root/tmp/broker.env" \
+  NUMIND_SANDBOX_READY_TRIES=1 \
+  NUMIND_SANDBOX_READY_SLEEP_SECONDS=0 \
+  NUMIND_SANDBOX_TEST_COMMANDS="slirp4netns newuidmap newgidmap dockerd rootlesskit" \
+  NUMIND_SANDBOX_BACKEND=broker \
+  NUMIND_SANDBOX_BROKER_INSTANCE=numind-prod-sandbox-primary \
+  NUMIND_SANDBOX_API_HOST_UID=1001 \
+  NUMIND_SANDBOX_IMAGE_DIGEST="ccr.ccs.tencentyun.com/youshunumind/sandbox-skill@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" \
+  NUMIND_SANDBOX_SECCOMP_SHA256="sha256:${seccomp_hash}" \
+  NUMIND_SANDBOX_PARENT_MEMORY_MAX_BYTES=2952790016 \
+  NUMIND_SANDBOX_WORKLOAD_MEMORY_MAX_BYTES=2415919104 \
+  NUMIND_SANDBOX_WORKLOAD_MEMORY_HIGH_BYTES=2147483648 \
+  NUMIND_SANDBOX_WORKLOAD_MEMORY_RECOVERY_BYTES=1932735283 \
+  NUMIND_SANDBOX_WORKLOAD_MEMORY_SHED_BYTES=2319282339 \
+  NUMIND_SANDBOX_CONTROL_MEMORY_HIGH_BYTES=268435456 \
+  NUMIND_SANDBOX_CONTROL_MEMORY_MAX_BYTES=402653184 \
+  NUMIND_SANDBOX_PARENT_HEADROOM_BYTES=134217728 \
+  env "$@" ENV=prod IMAGE="example.invalid/numind-server:sandboxd-test" bash "$DEPLOY_SANDBOX_REMOTE_SH" > "$out" 2>&1
+}
+
+SANDBOXD_SUCCESS_ROOT="$TMP/sandboxd-success-root"
+prepare_sandboxd_root "$SANDBOXD_SUCCESS_ROOT"
+SANDBOXD_SUCCESS_DOCKER_LOG="$TMP/sandboxd-success-docker.log"
+run_sandboxd_deploy "$SANDBOXD_SUCCESS_ROOT" "$TMP/sandboxd-success.out" "$SANDBOXD_SUCCESS_DOCKER_LOG"
+sandboxd_success_rc=$?
+
+if [ "$sandboxd_success_rc" -eq 0 ] && grep -Fq "sandboxd deploy success" "$TMP/sandboxd-success.out"; then
+  echo "PASS: sandboxd deploy succeeds after broker readiness"
+else
+  echo "FAIL: sandboxd deploy should succeed after broker readiness"
+  fail=1
+fi
+
+if grep -Fq "sandboxd-new" "$SANDBOXD_SUCCESS_ROOT/opt/numind-sandbox/bin/numind-sandboxd" &&
+   grep -Fq "NUMIND_SANDBOX_BROKER_GID=1999" "$SANDBOXD_SUCCESS_ROOT/tmp/broker.env" &&
+   [ -f "$SANDBOXD_SUCCESS_ROOT/opt/numind-sandbox/seccomp/seccomp.json" ]; then
+  echo "PASS: sandboxd deploy installs new binary and writes broker gid env"
+else
+  echo "FAIL: sandboxd deploy should install new binary, seccomp profile, and write broker gid env"
+  fail=1
+fi
+
+if grep -Fq "systemctl stop numind-sandboxd" "$SANDBOXD_SUCCESS_ROOT/tmp/sandboxd-deploy.log" &&
+   grep -Fq "systemctl restart numind-sandboxd" "$SANDBOXD_SUCCESS_ROOT/tmp/sandboxd-deploy.log" &&
+   grep -Fq "curl /readyz" "$SANDBOXD_SUCCESS_ROOT/tmp/sandboxd-deploy.log" &&
+   grep -Fq "image prune" "$SANDBOXD_SUCCESS_DOCKER_LOG"; then
+  echo "PASS: sandboxd deploy drains, restarts, checks readiness, and only prunes unreferenced images"
+else
+  echo "FAIL: sandboxd deploy missing drain/restart/ready/prune evidence"
+  fail=1
+fi
+
+SANDBOXD_FAIL_ROOT="$TMP/sandboxd-fail-root"
+prepare_sandboxd_root "$SANDBOXD_FAIL_ROOT"
+SANDBOXD_FAIL_DOCKER_LOG="$TMP/sandboxd-fail-docker.log"
+set +e
+run_sandboxd_deploy "$SANDBOXD_FAIL_ROOT" "$TMP/sandboxd-fail.out" "$SANDBOXD_FAIL_DOCKER_LOG" NUMIND_SANDBOX_TEST_FAIL_READY=1
+sandboxd_fail_rc=$?
+set +e
+
+if [ "$sandboxd_fail_rc" -ne 0 ] && grep -Fq "user API deploy must not proceed" "$TMP/sandboxd-fail.out"; then
+  echo "PASS: sandboxd deploy blocks user API when broker readiness fails"
+else
+  echo "FAIL: sandboxd deploy should block user API when broker readiness fails"
+  fail=1
+fi
+
+if grep -Fq "sandboxd-old" "$SANDBOXD_FAIL_ROOT/opt/numind-sandbox/bin/numind-sandboxd" &&
+   grep -Fq "reconcile dry-run" "$SANDBOXD_FAIL_ROOT/tmp/sandboxd-deploy.log"; then
+  echo "PASS: sandboxd deploy restores old binary and runs reconcile dry-run on readiness failure"
+else
+  echo "FAIL: sandboxd deploy should restore old binary and run reconcile dry-run"
   fail=1
 fi
 
@@ -726,6 +1044,30 @@ if [ "$fail" -ne 0 ]; then
   cat "$TMP/admin-deploy-remote.out" 2>/dev/null || true
   echo "---- admin docker run log ----"
   cat "$ADMIN_DOCKER_RUN_LOG" 2>/dev/null || true
+  echo "---- server broker deploy-remote output ----"
+  cat "$TMP/server-broker-deploy-remote.out" 2>/dev/null || true
+  echo "---- server broker docker run log ----"
+  cat "$SERVER_BROKER_DOCKER_RUN_LOG" 2>/dev/null || true
+  echo "---- server disabled deploy-remote output ----"
+  cat "$TMP/server-disabled-deploy-remote.out" 2>/dev/null || true
+  echo "---- server disabled docker run log ----"
+  cat "$SERVER_DISABLED_DOCKER_RUN_LOG" 2>/dev/null || true
+  echo "---- server docker socket deploy-remote output ----"
+  cat "$TMP/server-docker-socket-deploy-remote.out" 2>/dev/null || true
+  echo "---- server docker socket docker run log ----"
+  cat "$SERVER_DOCKER_SOCKET_DOCKER_RUN_LOG" 2>/dev/null || true
+  echo "---- sandboxd success output ----"
+  cat "$TMP/sandboxd-success.out" 2>/dev/null || true
+  echo "---- sandboxd success deploy log ----"
+  cat "$SANDBOXD_SUCCESS_ROOT/tmp/sandboxd-deploy.log" 2>/dev/null || true
+  echo "---- sandboxd success docker log ----"
+  cat "$SANDBOXD_SUCCESS_DOCKER_LOG" 2>/dev/null || true
+  echo "---- sandboxd fail output ----"
+  cat "$TMP/sandboxd-fail.out" 2>/dev/null || true
+  echo "---- sandboxd fail deploy log ----"
+  cat "$SANDBOXD_FAIL_ROOT/tmp/sandboxd-deploy.log" 2>/dev/null || true
+  echo "---- sandboxd fail docker log ----"
+  cat "$SANDBOXD_FAIL_DOCKER_LOG" 2>/dev/null || true
   echo "---- prod secrets deploy-remote output ----"
   cat "$TMP/prod-secrets-deploy-remote.out" 2>/dev/null || true
   echo "---- missing prod secrets deploy-remote output ----"
