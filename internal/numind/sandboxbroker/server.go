@@ -230,7 +230,10 @@ func (s *JournalRPCService) Activate(
 		return err
 	}
 	if replay {
-		return nil
+		if lease.State != LeaseActive {
+			return ErrRPCReplayResultUnavailable
+		}
+		return s.scheduler.Activate(leaseID)
 	}
 	if err := s.scheduler.Activate(leaseID); err != nil {
 		s.finishLease(
