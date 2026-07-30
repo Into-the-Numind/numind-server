@@ -5,7 +5,7 @@ features:
   description: Run the Dev-proven Sandbox feature on the existing Prod host while isolating its Docker control plane, networks, secrets, mounts, and resource budget from customer-facing services and data.
   classification_reason: 'Standard: production host container-control security, a separate Sandbox runtime, build/deploy scripts, resource policy, and rollback verification span more than three files and are high risk.'
   last_updated_by: ai-s4-coding
-  last_updated_at: '2026-07-30T09:56:04+0800'
+  last_updated_at: '2026-07-30T10:45:32+0800'
   created_at: '2026-07-30T01:26:00+0800'
   track: standard
   stage: S4
@@ -13,7 +13,7 @@ features:
   repos: [numind-server]
   branches: {numind-server: feature/prod-sandbox-isolation}
   worktrees: {numind-server: /private/tmp/wt-prod-sandbox-isolation-numind-server}
-  progress: {total_tasks: 18, completed_tasks: 4, reviewed_tasks: 3, current_task: 'T5 Unix-only transport, peer authorization, and RPC limits implementation'}
+  progress: {total_tasks: 18, completed_tasks: 5, reviewed_tasks: 4, current_task: 'T6 Prod capacity formula and release-block implementation'}
   artifacts:
     requirement: requirements/prod-sandbox-isolation.md
     proposal: proposals/prod-sandbox-isolation-proposal.md
@@ -23,6 +23,7 @@ features:
     t2_journal: .ndf/decisions/prod-sandbox-isolation/0002-t2-lease-journal.md
     t3_runtime_stream: .ndf/decisions/prod-sandbox-isolation/0003-t3-runtime-stream.md
     t4_scheduler: .ndf/decisions/prod-sandbox-isolation/0004-t4-global-scheduler.md
+    t5_unix_rpc: .ndf/decisions/prod-sandbox-isolation/0005-t5-unix-rpc.md
     office_hours_design: /Users/zhiyuchen/.gstack/projects/Into-the-Numind-numind-server/zhiyuchen-feature-prod-sandbox-isolation-design-20260730-023436.md
   decisions:
   - 'Use the existing Prod cloud server rather than adding a separate cloud server.'
@@ -57,6 +58,8 @@ features:
   - 'T3 gate exception: on 2026-07-30 the product owner explicitly directed the rollout to stop changing the isolation issue and continue forward. The Seccomp race and fail-closed wrapped-archive off-by-one remain recorded residual risks; T3 is complete but not counted as formally reviewed.'
   - 'T4: one broker-wide scheduler enforces five total containers, five active tasks, strict FIFO, a 30-second wait, cancellation, cross-owner sharing, idempotent replay, a 32-request queue ceiling, and a 4096-record replay ceiling with incremental expiry cleanup.'
   - 'T4 review: final independent static spec review PASS 0 P0/0 P1/2 P2 and quality review PASS 0 P0/0 P1/2 P2 at commit 4fdbcbb7. The product owner explicitly directed no further T4 test runs; go vet passed, while the earlier task lint retry was blocked only by the golangci-lint download network timeout.'
+  - 'T5: Unix-only HTTP RPC, Linux peer UID authorization, strict metadata, lifecycle idempotency, 32-connection/4-copy-stream limits, shared 100 MiB/s rate, 300-second socket deadlines, copy-out completion signaling, and independent failure cleanup implemented. The concrete fixed ContainerRuntime adapter is explicitly owned by T10.'
+  - 'T5 review: final independent static specification and quality reviews PASS 0 P0/0 P1 at commit 6a3aea4c. The product owner explicitly directed this step to skip additional test runs and continue; final package build passed. The previously accepted socket-parent/umask isolation risk remains deferred and Prod/config_prod/databases were untouched.'
   blockers: []
 - id: xhs-analytics-summary-tests
   ndf_version: '3.0'
