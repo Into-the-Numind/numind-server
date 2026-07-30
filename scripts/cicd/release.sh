@@ -21,6 +21,43 @@ BUILD_REPO_PATH="repos/numind-server"
 SSH_OPTS="-i $BUILD_SSH_KEY -o StrictHostKeyChecking=no"
 SSH_TARGET="${BUILD_USER}@${BUILD_HOST}"
 
+SANDBOX_ENV_KEYS=(
+  NUMIND_SANDBOX_BACKEND
+  NUMIND_SANDBOX_BROKER_SOCKET
+  NUMIND_SANDBOX_BROKER_OWNER_ID
+  NUMIND_SANDBOX_BROKER_INSTANCE
+  NUMIND_SANDBOX_API_HOST_UID
+  NUMIND_SANDBOX_IMAGE_DIGEST
+  NUMIND_SANDBOX_SECCOMP_SHA256
+  NUMIND_SANDBOX_PARENT_MEMORY_MAX_BYTES
+  NUMIND_SANDBOX_WORKLOAD_MEMORY_MAX_BYTES
+  NUMIND_SANDBOX_WORKLOAD_MEMORY_HIGH_BYTES
+  NUMIND_SANDBOX_WORKLOAD_MEMORY_RECOVERY_BYTES
+  NUMIND_SANDBOX_WORKLOAD_MEMORY_SHED_BYTES
+  NUMIND_SANDBOX_CONTROL_MEMORY_HIGH_BYTES
+  NUMIND_SANDBOX_CONTROL_MEMORY_MAX_BYTES
+  NUMIND_SANDBOX_PARENT_HEADROOM_BYTES
+  NUMIND_SANDBOX_USER_UID
+  NUMIND_SANDBOX_GROUP_GID
+  NUMIND_SANDBOX_API_GROUP_GID
+  NUMIND_SANDBOX_SUBID_START
+  NUMIND_SANDBOX_SUBID_COUNT
+  NUMIND_SANDBOX_CPU_QUOTA_PERCENT
+  NUMIND_SANDBOX_TASKS_MAX
+)
+
+quote_env_assignments() {
+  local out="" key value quoted
+  for key in "${SANDBOX_ENV_KEYS[@]}"; do
+    if [ -n "${!key+x}" ]; then
+      value="${!key}"
+      printf -v quoted '%q' "$value"
+      out+=" ${key}=${quoted}"
+    fi
+  done
+  printf '%s' "$out"
+}
+
 # Per-repo deploy lock. 3 个仓库的部署都 rsync 到构建机各自的 ~/repos/<repo>/ 共享目录，
 # 再在该目录跑 docker build。rsync 用 --delete。根因(2026-06-16 deploy-rsync-lock)：
 # 同一仓库的两个部署并发时，一个的 rsync --delete 会在另一个 docker build 读上下文期间
@@ -170,8 +207,10 @@ do_cleanup_build_cache() {
 do_deploy() {
   echo
   echo "--- [3/3] deploy to $ENV ---"
+  local sandbox_env
+  sandbox_env="$(quote_env_assignments)"
   ssh $SSH_OPTS "$SSH_TARGET" \
-    "cd $BUILD_REPO_PATH && GIT_SHA='${EFFECTIVE_SHA}' GIT_TAG='${GIT_TAG}' bash scripts/cicd/deploy.sh '$ENV' '$TARGET'"
+    "cd $BUILD_REPO_PATH && GIT_SHA='${EFFECTIVE_SHA}' GIT_TAG='${GIT_TAG}' ${sandbox_env} bash scripts/cicd/deploy.sh '$ENV' '$TARGET'"
 }
 
 # 获取 per-repo 部署锁，把同仓库的并发部署串行化（防共享构建目录被并发 rsync --delete 破坏）。
