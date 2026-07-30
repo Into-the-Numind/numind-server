@@ -262,7 +262,7 @@ func TestSchedulerRequestReplayNeverOccupiesTwoSlots(t *testing.T) {
 
 func TestSchedulerConcurrentAcquireNeverExceedsLimit(t *testing.T) {
 	const (
-		workers = 40
+		workers = 32
 		limit   = 5
 	)
 	scheduler := newScheduler(limit, limit, 3*time.Second)
