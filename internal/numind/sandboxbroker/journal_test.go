@@ -748,6 +748,32 @@ func TestJournalStaleAndRecoveryQueriesAreBoundedAndDeterministic(t *testing.T) 
 	if err != nil || len(pending) != 1 || pending[0].LeaseID != "lease-a" {
 		t.Fatalf("pending leases = %v err=%v", leaseIDs(pending), err)
 	}
+	completed, replay, err := journal.MarkReconcileCompleted(
+		context.Background(),
+		"lease-a",
+		"reconciled-a",
+		base.Add(3*time.Second),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replay || completed.State != LeaseTerminated ||
+		completed.ReconcileState != "completed" {
+		t.Fatalf("completed lease = %#v replay=%v", completed, replay)
+	}
+	completed, replay, err = journal.MarkReconcileCompleted(
+		context.Background(),
+		"lease-a",
+		"reconciled-a",
+		base.Add(3*time.Second),
+	)
+	if err != nil || !replay || completed.State != LeaseTerminated {
+		t.Fatalf("replay completed=%#v replay=%v err=%v", completed, replay, err)
+	}
+	pending, err = journal.ListRecoveryPending(context.Background(), 10)
+	if err != nil || len(pending) != 0 {
+		t.Fatalf("pending after reconcile = %v err=%v", leaseIDs(pending), err)
+	}
 	for _, limit := range []int{0, MaxJournalQueryLimit + 1} {
 		if _, err := journal.ListLive(context.Background(), limit); !errors.Is(err, ErrInvalidQueryLimit) {
 			t.Fatalf("ListLive limit %d err = %v", limit, err)

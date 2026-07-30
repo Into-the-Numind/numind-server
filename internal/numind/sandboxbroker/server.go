@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -55,6 +56,11 @@ type RPCService interface {
 	Inspect(context.Context, PeerCredentials, string) (InspectRPCResponse, error)
 	ListLeases(context.Context, PeerCredentials, string) ([]string, error)
 	Delete(context.Context, PeerCredentials, string, MutationRPCRequest) error
+}
+
+type RecoveryRPCService interface {
+	ListRecoveryPending(context.Context, PeerCredentials, int) ([]RecoveryPendingRPCLease, error)
+	MarkReconciled(context.Context, PeerCredentials, string, MutationRPCRequest) error
 }
 
 // ContainerRuntime performs only fixed-policy operations against the dedicated
@@ -285,6 +291,15 @@ func (s *JournalRPCService) Activate(
 			return ErrRPCReplayResultUnavailable
 		}
 	}
+	logSandboxAudit("sandbox lease transition", AuditEvent{
+		RequestID:        input.RequestID,
+		LeaseID:          leaseID,
+		OwnerID:          current.OwnerID,
+		AgentRunID:       runID,
+		SandboxSessionID: sessionID,
+		StateFrom:        current.State,
+		StateTo:          LeaseActive,
+	})
 	return nil
 }
 
@@ -669,6 +684,63 @@ func (s *JournalRPCService) ListLeases(
 	return leaseIDs, nil
 }
 
+func (s *JournalRPCService) ListRecoveryPending(
+	ctx context.Context,
+	peer PeerCredentials,
+	limit int,
+) ([]RecoveryPendingRPCLease, error) {
+	leases, err := s.journal.ListRecoveryPending(ctx, limit)
+	if err != nil {
+		return nil, err
+	}
+	response := make([]RecoveryPendingRPCLease, 0, len(leases))
+	for _, lease := range leases {
+		if lease.PeerUID != int64(peer.UID) {
+			continue
+		}
+		response = append(response, RecoveryPendingRPCLease{
+			LeaseID:           lease.LeaseID,
+			AgentRunID:        lease.AgentRunID,
+			SandboxSessionID:  lease.SandboxSessionID,
+			State:             string(lease.State),
+			TerminationReason: string(lease.TerminationReason),
+		})
+	}
+	return response, nil
+}
+
+func (s *JournalRPCService) MarkReconciled(
+	ctx context.Context,
+	peer PeerCredentials,
+	leaseID string,
+	input MutationRPCRequest,
+) error {
+	lease, err := s.leaseForPeer(ctx, peer, leaseID)
+	if err != nil {
+		return err
+	}
+	next, _, err := s.journal.MarkReconcileCompleted(
+		ctx,
+		leaseID,
+		input.RequestID,
+		canonicalJournalTime(time.Now()),
+	)
+	if err != nil {
+		return err
+	}
+	logSandboxAudit("sandbox lease reconciled", AuditEvent{
+		RequestID:         input.RequestID,
+		LeaseID:           leaseID,
+		OwnerID:           lease.OwnerID,
+		AgentRunID:        lease.AgentRunID,
+		SandboxSessionID:  lease.SandboxSessionID,
+		StateFrom:         lease.State,
+		StateTo:           next.State,
+		TerminationReason: next.TerminationReason,
+	})
+	return nil
+}
+
 func (s *JournalRPCService) Delete(
 	ctx context.Context,
 	peer PeerCredentials,
@@ -739,6 +811,16 @@ func (s *JournalRPCService) Delete(
 	if err != nil {
 		return err
 	}
+	logSandboxAudit("sandbox lease transition", AuditEvent{
+		RequestID:         input.RequestID,
+		LeaseID:           leaseID,
+		OwnerID:           lease.OwnerID,
+		AgentRunID:        lease.AgentRunID,
+		SandboxSessionID:  lease.SandboxSessionID,
+		StateFrom:         lease.State,
+		StateTo:           LeaseTerminated,
+		TerminationReason: reason,
+	})
 	return s.journal.completeRPCOperation(
 		ctx,
 		leaseID,
@@ -871,6 +953,17 @@ func (s *JournalRPCService) finishLease(
 		TerminationReason: &reason,
 	}); err != nil {
 		s.markRecoveryPending(lease, requestID, reason)
+	} else {
+		logSandboxAudit("sandbox lease transition", AuditEvent{
+			RequestID:         requestID,
+			LeaseID:           lease.LeaseID,
+			OwnerID:           lease.OwnerID,
+			AgentRunID:        lease.AgentRunID,
+			SandboxSessionID:  lease.SandboxSessionID,
+			StateFrom:         lease.State,
+			StateTo:           LeaseTerminated,
+			TerminationReason: reason,
+		})
 	}
 }
 
@@ -885,7 +978,7 @@ func (s *JournalRPCService) markRecoveryPending(
 	ctx, cancel := context.WithTimeout(context.Background(), RuntimeExecTimeout)
 	defer cancel()
 	reconcile := "pending"
-	_, _, _ = s.journal.Transition(ctx, TransitionParams{
+	next, _, err := s.journal.Transition(ctx, TransitionParams{
 		LeaseID:           lease.LeaseID,
 		RequestID:         derivedRPCRequestID(requestID, "recovery"),
 		To:                LeaseRecoveryPending,
@@ -893,6 +986,18 @@ func (s *JournalRPCService) markRecoveryPending(
 		TerminationReason: &reason,
 		ReconcileState:    &reconcile,
 	})
+	if err == nil {
+		logSandboxAudit("sandbox lease transition", AuditEvent{
+			RequestID:         requestID,
+			LeaseID:           lease.LeaseID,
+			OwnerID:           lease.OwnerID,
+			AgentRunID:        lease.AgentRunID,
+			SandboxSessionID:  lease.SandboxSessionID,
+			StateFrom:         lease.State,
+			StateTo:           next.State,
+			TerminationReason: reason,
+		})
+	}
 }
 
 func createLeaseRPCResponse(lease Lease) CreateLeaseRPCResponse {
@@ -1137,6 +1242,14 @@ type InspectRPCResponse struct {
 	OwnerBootID string `json:"owner_boot_id"`
 }
 
+type RecoveryPendingRPCLease struct {
+	LeaseID           string `json:"lease_id"`
+	AgentRunID        uint64 `json:"agent_run_id"`
+	SandboxSessionID  uint64 `json:"sandbox_session_id"`
+	State             string `json:"state"`
+	TerminationReason string `json:"termination_reason"`
+}
+
 type rpcErrorBody struct {
 	Error struct {
 		Code      string `json:"code"`
@@ -1273,6 +1386,29 @@ func (s *Server) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		s.writeError(writer, request, ErrRPCProtocol)
 		return
 	}
+	if s.handleObservability(writer, request) {
+		return
+	}
+	if request.URL.Path == "/v1/recovery-pending" {
+		s.handleRecoveryCollection(writer, request, peer)
+		return
+	}
+	const recoveryPrefix = "/v1/recovery-pending/"
+	if strings.HasPrefix(request.URL.Path, recoveryPrefix) {
+		remainder := strings.TrimPrefix(request.URL.Path, recoveryPrefix)
+		parts := strings.Split(remainder, "/")
+		if len(parts) != 2 || parts[1] != "reconciled" {
+			http.NotFound(writer, request)
+			return
+		}
+		leaseID, err := url.PathUnescape(parts[0])
+		if err != nil || !safeRuntimeToken(leaseID) {
+			s.writeError(writer, request, ErrRPCProtocol)
+			return
+		}
+		s.handleRecoveryLease(writer, request, peer, leaseID)
+		return
+	}
 	if request.URL.Path == "/v1/leases" {
 		s.handleLeaseCollection(writer, request, peer)
 		return
@@ -1298,6 +1434,61 @@ func (s *Server) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		action = parts[1]
 	}
 	s.handleLease(writer, request, peer, leaseID, action)
+}
+
+func (s *Server) handleObservability(
+	writer http.ResponseWriter,
+	request *http.Request,
+) bool {
+	switch request.URL.Path {
+	case "/healthz", "/readyz", "/metrics":
+	default:
+		return false
+	}
+	if request.Method != http.MethodGet {
+		s.methodNotAllowed(writer, "GET")
+		return true
+	}
+	if request.URL.RawQuery != "" {
+		s.writeError(writer, request, ErrRPCProtocol)
+		return true
+	}
+	observability, ok := s.service.(ServerObservability)
+	if !ok {
+		s.writeError(writer, request, ErrReadinessUnavailable)
+		return true
+	}
+	switch request.URL.Path {
+	case "/healthz":
+		if err := observability.Healthz(request.Context()); err != nil {
+			s.writeError(writer, request, err)
+			return true
+		}
+		writer.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		writer.WriteHeader(http.StatusOK)
+		_, _ = writer.Write([]byte("ok\n"))
+	case "/readyz":
+		if err := observability.Readyz(request.Context()); err != nil {
+			s.writeError(writer, request, err)
+			return true
+		}
+		writer.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		writer.WriteHeader(http.StatusOK)
+		_, _ = writer.Write([]byte("ready\n"))
+	case "/metrics":
+		snapshot, err := observability.SandboxMetrics(request.Context())
+		if err != nil {
+			s.writeError(writer, request, err)
+			return true
+		}
+		writer.Header().Set(
+			"Content-Type",
+			"text/plain; version=0.0.4; charset=utf-8",
+		)
+		writer.WriteHeader(http.StatusOK)
+		_, _ = writer.Write([]byte(RenderPrometheusMetrics(snapshot)))
+	}
+	return true
 }
 
 func (s *Server) handleLeaseCollection(
@@ -1358,6 +1549,79 @@ func (s *Server) handleLeaseCollection(
 		writer.Header().Set("Allow", "GET, POST")
 		writer.WriteHeader(http.StatusMethodNotAllowed)
 	}
+}
+
+func (s *Server) handleRecoveryCollection(
+	writer http.ResponseWriter,
+	request *http.Request,
+	peer PeerCredentials,
+) {
+	if request.Method != http.MethodGet {
+		s.methodNotAllowed(writer, "GET")
+		return
+	}
+	recovery, ok := s.service.(RecoveryRPCService)
+	if !ok {
+		s.writeError(writer, request, ErrReadinessUnavailable)
+		return
+	}
+	limitValue, ok := exactQueryValue(request.URL.Query(), "limit")
+	if !ok {
+		s.writeError(writer, request, ErrRPCProtocol)
+		return
+	}
+	limit, err := strconv.Atoi(limitValue)
+	if err != nil || limit <= 0 || limit > MaxJournalQueryLimit {
+		s.writeError(writer, request, ErrInvalidQueryLimit)
+		return
+	}
+	leases, err := recovery.ListRecoveryPending(
+		request.Context(),
+		peer,
+		limit,
+	)
+	if err != nil {
+		s.writeError(writer, request, err)
+		return
+	}
+	if !validRecoveryPendingList(leases) {
+		s.writeError(writer, request, ErrRPCProtocol)
+		return
+	}
+	s.writeJSON(writer, http.StatusOK, struct {
+		Leases []RecoveryPendingRPCLease `json:"leases"`
+	}{Leases: leases})
+}
+
+func (s *Server) handleRecoveryLease(
+	writer http.ResponseWriter,
+	request *http.Request,
+	peer PeerCredentials,
+	leaseID string,
+) {
+	if request.Method != http.MethodPost {
+		s.methodNotAllowed(writer, "POST")
+		return
+	}
+	if request.URL.RawQuery != "" {
+		s.writeError(writer, request, ErrRPCProtocol)
+		return
+	}
+	recovery, ok := s.service.(RecoveryRPCService)
+	if !ok {
+		s.writeError(writer, request, ErrReadinessUnavailable)
+		return
+	}
+	var input MutationRPCRequest
+	if err := s.decodeMutation(writer, request, &input, ""); err != nil {
+		s.writeError(writer, request, err)
+		return
+	}
+	s.writeNoContent(
+		writer,
+		request,
+		recovery.MarkReconciled(request.Context(), peer, leaseID, input),
+	)
 }
 
 func (s *Server) handleLease(
@@ -1719,6 +1983,7 @@ func rpcErrorContract(err error) (int, string) {
 		errors.Is(err, ErrStreamPolicyDenied),
 		errors.Is(err, ErrInvalidLease),
 		errors.Is(err, ErrInvalidTransition),
+		errors.Is(err, ErrInvalidQueryLimit),
 		errors.Is(err, ErrRPCProtocol):
 		return http.StatusBadRequest, "policy_denied"
 	case errors.Is(err, ErrIdempotencyConflict):
@@ -1770,6 +2035,27 @@ func validLeaseIDList(values []string) bool {
 			return false
 		}
 		seen[value] = struct{}{}
+	}
+	return true
+}
+
+func validRecoveryPendingList(values []RecoveryPendingRPCLease) bool {
+	if values == nil {
+		return false
+	}
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		state := LeaseState(value.State)
+		if !safeRuntimeToken(value.LeaseID) ||
+			(state != LeaseRecoveryPending && state != LeaseTerminated) ||
+			(value.TerminationReason != "" &&
+				!IsValidTerminationReason(TerminationReason(value.TerminationReason))) {
+			return false
+		}
+		if _, duplicate := seen[value.LeaseID]; duplicate {
+			return false
+		}
+		seen[value.LeaseID] = struct{}{}
 	}
 	return true
 }

@@ -652,6 +652,97 @@ func (j *Journal) ListRecoveryPending(ctx context.Context, limit int) ([]Lease, 
  ORDER BY updated_at, lease_id LIMIT ?`, LeaseRecoveryPending, limit)
 }
 
+// MarkReconcileCompleted marks one recovery-pending lease as fully reconciled.
+// It is idempotent across retries: if another run already completed the same
+// reconciliation, the current terminal lease is returned without changing user
+// data or re-opening the lifecycle.
+func (j *Journal) MarkReconcileCompleted(
+	ctx context.Context,
+	leaseID string,
+	requestID string,
+	at time.Time,
+) (Lease, bool, error) {
+	if strings.TrimSpace(leaseID) == "" ||
+		strings.TrimSpace(requestID) == "" ||
+		len(leaseID) > 128 ||
+		len(requestID) > 128 {
+		return Lease{}, false, ErrInvalidLease
+	}
+	if at.IsZero() {
+		at = canonicalJournalTime(time.Now())
+	} else {
+		at = canonicalJournalTime(at)
+	}
+
+	j.mu.RLock()
+	defer j.mu.RUnlock()
+	if j.closed {
+		return Lease{}, false, ErrJournalClosed
+	}
+	tx, err := j.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Lease{}, false, fmt.Errorf("begin reconcile complete: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	fingerprint := operationFingerprint("reconcile_completed", leaseID)
+	event, found, err := eventByRequestTx(ctx, tx, requestID)
+	if err != nil {
+		return Lease{}, false, err
+	}
+	if found {
+		if event.EventType != "reconcile_completed" ||
+			event.LeaseID != leaseID ||
+			event.RequestHash != fingerprint {
+			return Lease{}, false, ErrIdempotencyConflict
+		}
+		lease, getErr := leaseByIDTx(ctx, tx, leaseID)
+		return lease, true, getErr
+	}
+
+	current, err := leaseByIDTx(ctx, tx, leaseID)
+	if err != nil {
+		return Lease{}, false, err
+	}
+	if current.ReconcileState == "completed" && current.State == LeaseTerminated {
+		return current, false, nil
+	}
+	if current.ReconcileState != "pending" && current.State != LeaseRecoveryPending {
+		return Lease{}, false, ErrInvalidTransition
+	}
+	if current.TerminationReason == "" || !IsValidTerminationReason(current.TerminationReason) {
+		return Lease{}, false, ErrInvalidTransition
+	}
+	if at.Before(current.UpdatedAt) {
+		return Lease{}, false, ErrInvalidTransition
+	}
+	next := current
+	if next.State == LeaseRecoveryPending {
+		next.State = LeaseTerminated
+	}
+	next.ReconcileState = "completed"
+	next.UpdatedAt = at
+	if err := updateLeaseTx(ctx, tx, next); err != nil {
+		return Lease{}, false, err
+	}
+	if err := insertEventTx(ctx, tx, LeaseEvent{
+		RequestID:   requestID,
+		RequestHash: fingerprint,
+		LeaseID:     leaseID,
+		EventType:   "reconcile_completed",
+		StateFrom:   current.State,
+		StateTo:     next.State,
+		Reason:      current.TerminationReason,
+		CreatedAt:   at,
+	}); err != nil {
+		return Lease{}, false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Lease{}, false, fmt.Errorf("commit reconcile complete: %w", err)
+	}
+	return next, false, nil
+}
+
 // ListEvents returns a bounded chronological audit trail for one lease.
 func (j *Journal) ListEvents(ctx context.Context, leaseID string, limit int) ([]LeaseEvent, error) {
 	if strings.TrimSpace(leaseID) == "" {

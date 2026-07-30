@@ -125,11 +125,13 @@ func TestBrokerDockerClientImplementsContract(t *testing.T) {
 			w.WriteHeader(http.StatusNoContent)
 		case http.MethodGet:
 			w.Header().Set("Content-Type", "application/x-tar")
+			w.Header().Set("Trailer", BrokerStreamStatusTrailer)
 			tw := tar.NewWriter(w)
 			body := []byte("artifact")
 			_ = tw.WriteHeader(&tar.Header{Name: "result.txt", Mode: 0o644, Size: int64(len(body)), Typeflag: tar.TypeReg})
 			_, _ = tw.Write(body)
 			_ = tw.Close()
+			w.Header().Set(BrokerStreamStatusTrailer, BrokerStreamStatusComplete)
 		default:
 			http.Error(w, "method", http.StatusMethodNotAllowed)
 		}

@@ -107,6 +107,55 @@ func TestServerStrictCreateListInspectAndMutationContracts(t *testing.T) {
 	}
 }
 
+func TestServerRecoveryPendingRoutesAreInternalAndBounded(t *testing.T) {
+	service := testRecoveryRPCService{
+		leases: []RecoveryPendingRPCLease{{
+			LeaseID:           "lease-1",
+			AgentRunID:        11,
+			SandboxSessionID:  22,
+			State:             string(LeaseRecoveryPending),
+			TerminationReason: string(TerminationContainerMissing),
+		}},
+	}
+	server := newTestServer(t, &service)
+
+	list := newPeerRequest(
+		t,
+		http.MethodGet,
+		"/v1/recovery-pending?limit=5",
+		"",
+		"",
+	)
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, list)
+	if response.Code != http.StatusOK ||
+		!strings.Contains(response.Body.String(), `"agent_run_id":11`) ||
+		strings.Contains(response.Body.String(), "container_id") {
+		t.Fatalf("list response = %d %s", response.Code, response.Body.String())
+	}
+
+	requestID := "22222222-2222-4222-8222-222222222222"
+	mark := newPeerRequest(
+		t,
+		http.MethodPost,
+		"/v1/recovery-pending/lease-1/reconciled",
+		`{"request_id":"`+requestID+`"}`,
+		requestID,
+	)
+	response = httptest.NewRecorder()
+	server.ServeHTTP(response, mark)
+	if response.Code != http.StatusNoContent || service.marked != "lease-1" {
+		t.Fatalf("mark response = %d %s marked=%s", response.Code, response.Body.String(), service.marked)
+	}
+
+	badLimit := newPeerRequest(t, http.MethodGet, "/v1/recovery-pending?limit=0", "", "")
+	response = httptest.NewRecorder()
+	server.ServeHTTP(response, badLimit)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("bad limit response = %d %s", response.Code, response.Body.String())
+	}
+}
+
 func TestServerRejectsUnknownFieldsMismatchedIDsAndUnauthenticatedHTTP(t *testing.T) {
 	server := newTestServer(t, testRPCService{})
 	requestID := "11111111-1111-4111-8111-111111111111"
@@ -607,6 +656,30 @@ func (testPeerAuthorizer) Authorize(net.Conn) (PeerCredentials, error) {
 
 type testRPCService struct {
 	copyIn func(io.Reader) error
+}
+
+type testRecoveryRPCService struct {
+	testRPCService
+	leases []RecoveryPendingRPCLease
+	marked string
+}
+
+func (s *testRecoveryRPCService) ListRecoveryPending(
+	context.Context,
+	PeerCredentials,
+	int,
+) ([]RecoveryPendingRPCLease, error) {
+	return append([]RecoveryPendingRPCLease(nil), s.leases...), nil
+}
+
+func (s *testRecoveryRPCService) MarkReconciled(
+	_ context.Context,
+	_ PeerCredentials,
+	leaseID string,
+	_ MutationRPCRequest,
+) error {
+	s.marked = leaseID
+	return nil
 }
 
 type testContainerRuntime struct {
