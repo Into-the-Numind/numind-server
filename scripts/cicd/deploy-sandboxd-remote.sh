@@ -31,6 +31,7 @@ RECONCILE_CONFIG="${NUMIND_SANDBOX_RECONCILE_CONFIG:-/opt/numind/prod/config_pro
 READY_TRIES="${NUMIND_SANDBOX_READY_TRIES:-60}"
 READY_SLEEP_SECONDS="${NUMIND_SANDBOX_READY_SLEEP_SECONDS:-5}"
 TEST_MODE="${NUMIND_SANDBOX_TEST_MODE:-0}"
+RESTART_OVERRIDE_ACTIVE=0
 
 fail() {
   echo "ERROR: sandboxd deploy: $1" >&2
@@ -92,6 +93,33 @@ systemctl_cmd() {
   systemctl "$@"
 }
 
+hold_restart_policy_for_deploy() {
+  RESTART_OVERRIDE_ACTIVE=1
+  if [ "$TEST_MODE" = "1" ]; then
+    printf 'hold restart policy\n' >> "$(root_path /tmp/sandboxd-deploy.log)"
+    return 0
+  fi
+  mkdir -p /etc/systemd/system/numind-sandboxd.service.d
+  cat > /etc/systemd/system/numind-sandboxd.service.d/99-deploy-no-restart.conf <<'UNIT'
+[Service]
+Restart=no
+UNIT
+  systemctl_cmd daemon-reload
+}
+
+restore_restart_policy_after_deploy() {
+  [ "$RESTART_OVERRIDE_ACTIVE" = "1" ] || return 0
+  if [ "$TEST_MODE" = "1" ]; then
+    printf 'restore restart policy\n' >> "$(root_path /tmp/sandboxd-deploy.log)"
+    RESTART_OVERRIDE_ACTIVE=0
+    return 0
+  fi
+  rm -f /etc/systemd/system/numind-sandboxd.service.d/99-deploy-no-restart.conf
+  rmdir /etc/systemd/system/numind-sandboxd.service.d 2>/dev/null || true
+  systemctl_cmd daemon-reload
+  RESTART_OVERRIDE_ACTIVE=0
+}
+
 broker_http_ok() {
   local path="$1"
   if [ "$TEST_MODE" = "1" ]; then
@@ -121,6 +149,17 @@ service_is_active() {
     return 0
   fi
   systemctl is-active --quiet numind-sandboxd
+}
+
+stop_sandboxd_for_deploy() {
+  echo "Draining old sandboxd (systemd TimeoutStopSec handles the 300s window)..."
+  hold_restart_policy_for_deploy
+  if ! systemctl_cmd stop numind-sandboxd; then
+    echo "sandboxd stop returned non-zero; verifying stopped state before continuing..."
+  fi
+  if [ "$TEST_MODE" != "1" ] && systemctl is-active --quiet numind-sandboxd; then
+    fail "sandboxd did not stop before binary replacement"
+  fi
 }
 
 run_reconcile_dry_run() {
@@ -176,6 +215,7 @@ TMP_DIR="$(mktemp -d "$(root_path "$TMP_PARENT/deploy.XXXXXX")")"
 cleanup() {
   docker rm -f "$CID" >/dev/null 2>&1 || true
   rm -rf "$TMP_DIR"
+  restore_restart_policy_after_deploy || true
 }
 trap cleanup EXIT
 
@@ -199,8 +239,7 @@ if [ -f "$(root_path "$BIN_DIR/numind-sandbox-reconcile")" ]; then
 fi
 
 if service_is_active; then
-  echo "Draining old sandboxd (systemd TimeoutStopSec handles the 300s window)..."
-  systemctl_cmd stop numind-sandboxd
+  stop_sandboxd_for_deploy
 fi
 
 install -m 0755 "$TMP_DIR/numind-sandboxd" "$(root_path "$BIN_DIR/.numind-sandboxd.new")"
@@ -209,6 +248,7 @@ mv -f "$(root_path "$BIN_DIR/.numind-sandboxd.new")" "$(root_path "$BIN_DIR/numi
 mv -f "$(root_path "$BIN_DIR/.numind-sandbox-reconcile.new")" "$(root_path "$BIN_DIR/numind-sandbox-reconcile")"
 
 systemctl_cmd daemon-reload
+restore_restart_policy_after_deploy
 if ! systemctl_cmd restart numind-sandboxd || ! wait_broker_ready; then
   echo "Broker did not become ready; restoring previous sandboxd binary" >&2
   restore_old_binary "$OLD_SANDBOXD" "$OLD_RECONCILE"

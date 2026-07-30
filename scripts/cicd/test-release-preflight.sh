@@ -84,10 +84,19 @@ run_release_env() {
   local repo="$2"
   local out="$3"
   local mode="${4:---build-only}"
+  run_release_target_env "$env" server "$repo" "$out" "$mode"
+}
+
+run_release_target_env() {
+  local env="$1"
+  local target="$2"
+  local repo="$3"
+  local out="$4"
+  local mode="${5:---build-only}"
   (
     cd "$repo" || exit 2
     PATH="$TMP/bin:$PATH" TMPDIR="$TMP/locks" \
-      bash scripts/cicd/release.sh "$env" server "$mode"
+      bash scripts/cicd/release.sh "$env" "$target" "$mode"
   ) > "$out" 2>&1
 }
 
@@ -163,10 +172,72 @@ run_release "$UNTAGGED_REPO" "$TMP/untagged.out"
 untagged_rc=$?
 assert_dirty_prod_rejected "dirty untagged prod release" "$TMP/untagged.out" "$untagged_rc" "untracked-no-tag.txt"
 
-if grep -q "Tag: missing exact tag" "$TMP/untagged.out"; then
+if grep -q "Tag: missing exact v\\* tag for user API" "$TMP/untagged.out"; then
   echo "PASS: dirty untagged prod release explains the missing tag"
 else
   echo "FAIL: dirty untagged prod release missing tag explanation"
+  fail=1
+fi
+
+SERVER_WITH_ADMIN_TAG_ONLY_REPO="$TMP/server-admin-tag-only-repo"
+make_repo "$SERVER_WITH_ADMIN_TAG_ONLY_REPO"
+(
+  cd "$SERVER_WITH_ADMIN_TAG_ONLY_REPO" || exit 2
+  git tag admin-v1.4.10 || exit 2
+) || die "setup server repo tagged only with admin tag"
+run_release "$SERVER_WITH_ADMIN_TAG_ONLY_REPO" "$TMP/server-admin-tag-only.out"
+server_admin_tag_only_rc=$?
+
+if [ "$server_admin_tag_only_rc" -ne 0 ] &&
+   grep -q "Tag: missing exact v\\* tag for user API" "$TMP/server-admin-tag-only.out"; then
+  echo "PASS: prod server rejects admin-v* tag without a user API v* tag"
+else
+  echo "FAIL: prod server should require a user API v* tag"
+  fail=1
+fi
+
+ADMIN_WITH_SERVER_TAG_ONLY_REPO="$TMP/admin-server-tag-only-repo"
+make_repo "$ADMIN_WITH_SERVER_TAG_ONLY_REPO"
+(
+  cd "$ADMIN_WITH_SERVER_TAG_ONLY_REPO" || exit 2
+  git tag v2.1.66 || exit 2
+) || die "setup admin repo tagged only with server tag"
+run_release_target_env prod admin "$ADMIN_WITH_SERVER_TAG_ONLY_REPO" "$TMP/admin-server-tag-only.out"
+admin_server_tag_only_rc=$?
+
+if [ "$admin_server_tag_only_rc" -ne 0 ] &&
+   grep -q "Tag: missing exact admin-v\\* tag for admin API" "$TMP/admin-server-tag-only.out"; then
+  echo "PASS: prod admin rejects v* tag without an admin-v* tag"
+else
+  echo "FAIL: prod admin should require an admin-v* tag"
+  fail=1
+fi
+
+DUAL_TAG_REPO="$TMP/dual-tag-repo"
+make_repo "$DUAL_TAG_REPO"
+(
+  cd "$DUAL_TAG_REPO" || exit 2
+  git tag v2.1.66 || exit 2
+  git tag admin-v1.4.10 || exit 2
+) || die "setup dual target tags repo"
+run_release "$DUAL_TAG_REPO" "$TMP/dual-server.out"
+dual_server_rc=$?
+run_release_target_env prod admin "$DUAL_TAG_REPO" "$TMP/dual-admin.out"
+dual_admin_rc=$?
+
+if [ "$dual_server_rc" -eq 77 ] &&
+   grep -q "Tag     : v2.1.66" "$TMP/dual-server.out"; then
+  echo "PASS: prod server selects the v* tag when both target tags point at HEAD"
+else
+  echo "FAIL: prod server should select the v* tag when both target tags exist"
+  fail=1
+fi
+
+if [ "$dual_admin_rc" -eq 77 ] &&
+   grep -q "Tag     : admin-v1.4.10" "$TMP/dual-admin.out"; then
+  echo "PASS: prod admin selects the admin-v* tag when both target tags point at HEAD"
+else
+  echo "FAIL: prod admin should select the admin-v* tag when both target tags exist"
   fail=1
 fi
 
