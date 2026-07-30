@@ -1,6 +1,7 @@
 package sandboxbroker
 
 import (
+	"container/list"
 	"context"
 	"errors"
 	"sync"
@@ -14,6 +15,10 @@ const (
 	SchedulerActiveTaskMax = 5
 	// SchedulerQueueWaitTimeout is the fixed maximum FIFO wait.
 	SchedulerQueueWaitTimeout = 30 * time.Second
+	// SchedulerMaxQueued bounds blocked callers independently of connection limits.
+	SchedulerMaxQueued = 32
+	// SchedulerMaxReplayRecords bounds live and recently completed idempotency state.
+	SchedulerMaxReplayRecords = 4096
 	// schedulerReplayRetention covers the maximum live lease plus retry margin.
 	// The journal remains the durable idempotency source across broker restarts.
 	schedulerReplayRetention = 10 * time.Minute
@@ -26,6 +31,10 @@ var (
 	ErrSchedulerIdempotencyConflict = errors.New("sandbox scheduler idempotency conflict")
 	// ErrSchedulerQueueTimeout means no global slot opened within the fixed wait.
 	ErrSchedulerQueueTimeout = errors.New("sandbox scheduler queue timeout")
+	// ErrSchedulerQueueFull means the bounded FIFO has no room for another request.
+	ErrSchedulerQueueFull = errors.New("sandbox scheduler queue full")
+	// ErrSchedulerReplayCacheFull means idempotency state reached its hard ceiling.
+	ErrSchedulerReplayCacheFull = errors.New("sandbox scheduler replay cache full")
 	// ErrSchedulerLeaseNotFound means the lease does not own a live scheduler slot.
 	ErrSchedulerLeaseNotFound = errors.New("sandbox scheduler lease not found")
 	// ErrInvalidSchedulerTransition means a slot lifecycle call is out of order.
@@ -65,8 +74,10 @@ type schedulerSlot struct {
 }
 
 type schedulerWaiter struct {
-	done     chan struct{}
-	deadline time.Time
+	done                     chan struct{}
+	deadline                 time.Time
+	admissionDone            <-chan struct{}
+	admissionContextDeadline time.Time
 }
 
 type schedulerRequestRecord struct {
@@ -77,6 +88,7 @@ type schedulerRequestRecord struct {
 	outcomeSet bool
 	outcome    error
 	finishedAt time.Time
+	finished   *list.Element
 }
 
 // Scheduler owns the single broker-wide FIFO and live capacity counters.
@@ -92,6 +104,7 @@ type Scheduler struct {
 	requests      map[string]*schedulerRequestRecord
 	leaseRequests map[string]string
 	queue         []*schedulerRequestRecord
+	finished      *list.List
 	active        int
 }
 
@@ -121,6 +134,7 @@ func newScheduler(
 		slots:             make(map[string]*schedulerSlot, totalContainerMax),
 		requests:          make(map[string]*schedulerRequestRecord),
 		leaseRequests:     make(map[string]string),
+		finished:          list.New(),
 	}
 }
 
@@ -134,11 +148,17 @@ func (s *Scheduler) Acquire(
 	if s == nil || ctx == nil || !validSchedulerRequest(request) {
 		return ErrInvalidSchedulerRequest
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	admissionDone := ctx.Done()
+	admissionContextDeadline, _ := ctx.Deadline()
 
-	now := time.Now()
 	s.mu.Lock()
+	now := time.Now()
 	s.purgeFinishedLocked(now)
 	record, exists := s.requests[request.RequestID]
+	primary := false
 	if exists {
 		if record.request != request {
 			s.mu.Unlock()
@@ -154,6 +174,14 @@ func (s *Scheduler) Acquire(
 			return outcome
 		}
 	} else {
+		if len(s.queue) >= SchedulerMaxQueued {
+			s.mu.Unlock()
+			return ErrSchedulerQueueFull
+		}
+		if len(s.requests) >= SchedulerMaxReplayRecords {
+			s.mu.Unlock()
+			return ErrSchedulerReplayCacheFull
+		}
 		if existingRequestID, duplicate := s.leaseRequests[request.LeaseID]; duplicate &&
 			existingRequestID != request.RequestID {
 			s.mu.Unlock()
@@ -162,13 +190,16 @@ func (s *Scheduler) Acquire(
 		record = &schedulerRequestRecord{
 			request: request,
 			waiter: &schedulerWaiter{
-				done:     make(chan struct{}),
-				deadline: now.Add(s.queueWaitTimeout),
+				done:                     make(chan struct{}),
+				deadline:                 now.Add(s.queueWaitTimeout),
+				admissionDone:            admissionDone,
+				admissionContextDeadline: admissionContextDeadline,
 			},
 		}
 		s.requests[request.RequestID] = record
 		s.leaseRequests[request.LeaseID] = request.RequestID
 		s.queue = append(s.queue, record)
+		primary = true
 		s.grantFIFOHeadLocked()
 	}
 	waiter := record.waiter
@@ -189,6 +220,9 @@ func (s *Scheduler) Acquire(
 	case <-waiter.done:
 		return s.waitingOutcome(record)
 	case <-ctx.Done():
+		if !primary {
+			return ctx.Err()
+		}
 		return s.finishWaiting(record, ctx.Err())
 	case <-timer.C:
 		return s.finishWaiting(record, ErrSchedulerQueueTimeout)
@@ -248,9 +282,9 @@ func (s *Scheduler) Release(leaseID string) error {
 	if s == nil || !safeRuntimeToken(leaseID) {
 		return ErrSchedulerLeaseNotFound
 	}
-	now := time.Now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	now := time.Now()
 	s.purgeFinishedLocked(now)
 
 	slot, found := s.slots[leaseID]
@@ -270,7 +304,7 @@ func (s *Scheduler) Release(leaseID string) error {
 	record := s.requests[slot.request.RequestID]
 	if record != nil {
 		record.released = true
-		record.finishedAt = now
+		s.recordFinishedLocked(record, now)
 	}
 	s.grantFIFOHeadLocked()
 	return nil
@@ -326,7 +360,8 @@ func (s *Scheduler) finishWaiting(
 	}
 	record.outcomeSet = true
 	record.outcome = outcome
-	record.finishedAt = time.Now()
+	s.recordFinishedLocked(record, time.Now())
+	record.waiter.admissionDone = nil
 	close(record.waiter.done)
 	s.grantFIFOHeadLocked()
 	return outcome
@@ -353,24 +388,81 @@ func (s *Scheduler) grantFIFOHeadLocked() {
 		if record.outcomeSet || record.admitted {
 			continue
 		}
+		now := time.Now()
+		if admissionDone(record.waiter.admissionDone) {
+			outcome := context.Canceled
+			if !record.waiter.admissionContextDeadline.IsZero() &&
+				!now.Before(record.waiter.admissionContextDeadline) {
+				outcome = context.DeadlineExceeded
+			}
+			s.finishInvalidFIFOHeadLocked(record, outcome, now)
+			continue
+		}
+		if !now.Before(record.waiter.deadline) {
+			s.finishInvalidFIFOHeadLocked(
+				record,
+				ErrSchedulerQueueTimeout,
+				now,
+			)
+			continue
+		}
 		slot := &schedulerSlot{
 			request: record.request,
 			state:   schedulerSlotCreating,
 		}
 		s.slots[record.request.LeaseID] = slot
 		record.admitted = true
+		record.waiter.admissionDone = nil
 		close(record.waiter.done)
 	}
 }
 
+func (s *Scheduler) finishInvalidFIFOHeadLocked(
+	record *schedulerRequestRecord,
+	outcome error,
+	finishedAt time.Time,
+) {
+	record.outcomeSet = true
+	record.outcome = outcome
+	s.recordFinishedLocked(record, finishedAt)
+	record.waiter.admissionDone = nil
+	close(record.waiter.done)
+}
+
 func (s *Scheduler) purgeFinishedLocked(now time.Time) {
-	for requestID, record := range s.requests {
-		if record.finishedAt.IsZero() ||
-			now.Sub(record.finishedAt) < schedulerReplayRetention {
-			continue
+	for {
+		element := s.finished.Front()
+		if element == nil {
+			return
 		}
-		delete(s.requests, requestID)
+		record := element.Value.(*schedulerRequestRecord)
+		if now.Sub(record.finishedAt) < schedulerReplayRetention {
+			return
+		}
+		s.finished.Remove(element)
+		record.finished = nil
+		delete(s.requests, record.request.RequestID)
 		delete(s.leaseRequests, record.request.LeaseID)
+	}
+}
+
+func (s *Scheduler) recordFinishedLocked(
+	record *schedulerRequestRecord,
+	finishedAt time.Time,
+) {
+	if record.finished != nil {
+		return
+	}
+	record.finishedAt = finishedAt
+	record.finished = s.finished.PushBack(record)
+}
+
+func admissionDone(done <-chan struct{}) bool {
+	select {
+	case <-done:
+		return true
+	default:
+		return false
 	}
 }
 

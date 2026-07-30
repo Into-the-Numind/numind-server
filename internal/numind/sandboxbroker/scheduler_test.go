@@ -201,15 +201,20 @@ func TestSchedulerOwnersShareOneGlobalLimit(t *testing.T) {
 		}
 	}
 
+	waitContext, cancelWait := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
 		done <- scheduler.Acquire(
-			context.Background(),
+			waitContext,
 			testSchedulerRequest(5, "api-green"),
 		)
 	}()
 	waitForSchedulerQueue(t, scheduler, []string{"request-5"})
 	assertSchedulerCounts(t, scheduler, 5, 0, 1)
+	cancelWait()
+	if err := receiveSchedulerResult(t, done); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled Acquire error = %v", err)
+	}
 }
 
 func TestSchedulerRequestReplayNeverOccupiesTwoSlots(t *testing.T) {
