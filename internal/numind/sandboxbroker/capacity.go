@@ -18,6 +18,8 @@ const (
 	capacityMaximumFutureSkew  = 5 * time.Minute
 	capacityBusinessDivisor    = 6
 	capacityMaximumSamples     = 1_000_000
+	capacityBusinessStartHour  = 8
+	capacityBusinessEndHour    = 23
 
 	capacityParentPOCMax       = 11 * gibibyte / 4
 	capacityCoreReserve        = 5 * gibibyte / 4
@@ -37,7 +39,8 @@ var (
 	// ErrCapacityEvidenceInsufficient means the evidence window is too short.
 	ErrCapacityEvidenceInsufficient = errors.New("insufficient sandbox capacity evidence")
 	// ErrCapacityInsufficient means this host cannot safely enable customer traffic.
-	ErrCapacityInsufficient = errors.New("insufficient sandbox host capacity")
+	ErrCapacityInsufficient  = errors.New("insufficient sandbox host capacity")
+	capacityBusinessTimezone = time.FixedZone("Asia/Shanghai", 8*60*60)
 )
 
 // CapacityEvidenceMode records whether the input is established history or a
@@ -51,8 +54,8 @@ const (
 	CapacityEvidenceFreshSampling CapacityEvidenceMode = "fresh"
 )
 
-// CapacitySample is one host MemAvailable observation. BusinessWindow must be
-// true only for samples from the same product traffic period used for the P1.
+// CapacitySample is one host MemAvailable observation. BusinessWindow must
+// match the fixed 08:00-23:00 Asia/Shanghai window derived from ObservedAt.
 type CapacitySample struct {
 	ObservedAt        time.Time
 	MemAvailableBytes int64
@@ -61,9 +64,8 @@ type CapacitySample struct {
 
 // CapacityEvidence is the complete bounded input to the production formula.
 type CapacityEvidence struct {
-	Mode        CapacityEvidenceMode
-	EvaluatedAt time.Time
-	Samples     []CapacitySample
+	Mode    CapacityEvidenceMode
+	Samples []CapacitySample
 }
 
 // CapacityPlan is the exact set of values later written to systemd units.
@@ -84,15 +86,35 @@ type CapacityPlan struct {
 	ControlMaxBytes       int64
 	ParentHeadroomBytes   int64
 	ready                 bool
+	seal                  capacityPlanSeal
+}
+
+type capacityPlanSeal struct {
+	baselineBytes         int64
+	parentMaxBytes        int64
+	workloadMaxBytes      int64
+	workloadHighBytes     int64
+	workloadRecoveryBytes int64
+	workloadShedBytes     int64
+	controlHighBytes      int64
+	controlMaxBytes       int64
+	parentHeadroomBytes   int64
 }
 
 // CalculateSandboxCapacity validates evidence and derives all production
 // ceilings. It returns the calculated values with ErrCapacityInsufficient so a
 // release report can explain a low-capacity block without enabling traffic.
 func CalculateSandboxCapacity(evidence CapacityEvidence) (CapacityPlan, error) {
+	return calculateSandboxCapacityAt(evidence, time.Now().UTC())
+}
+
+func calculateSandboxCapacityAt(
+	evidence CapacityEvidence,
+	evaluatedAt time.Time,
+) (CapacityPlan, error) {
 	minimumDuration, ok := capacityMinimumDuration(evidence.Mode)
 	if !ok ||
-		evidence.EvaluatedAt.IsZero() ||
+		evaluatedAt.IsZero() ||
 		len(evidence.Samples) < 2 ||
 		len(evidence.Samples) > capacityMaximumSamples {
 		return CapacityPlan{}, ErrCapacityEvidenceInvalid
@@ -108,8 +130,10 @@ func CalculateSandboxCapacity(evidence CapacityEvidence) (CapacityPlan, error) {
 			sample.MemAvailableBytes <= 0 ||
 			sample.MemAvailableBytes > capacitySampleMaximum ||
 			sample.ObservedAt.After(
-				evidence.EvaluatedAt.Add(capacityMaximumFutureSkew),
-			) {
+				evaluatedAt.Add(capacityMaximumFutureSkew),
+			) ||
+			sample.BusinessWindow !=
+				isCapacityBusinessWindow(sample.ObservedAt) {
 			return CapacityPlan{}, ErrCapacityEvidenceInvalid
 		}
 		if index > 0 &&
@@ -130,7 +154,7 @@ func CalculateSandboxCapacity(evidence CapacityEvidence) (CapacityPlan, error) {
 		}
 	}
 	duration := samples[len(samples)-1].ObservedAt.Sub(samples[0].ObservedAt)
-	if evidence.EvaluatedAt.Sub(samples[len(samples)-1].ObservedAt) >
+	if evaluatedAt.Sub(samples[len(samples)-1].ObservedAt) >
 		capacityMaximumEvidenceAge {
 		return CapacityPlan{}, ErrCapacityEvidenceInsufficient
 	}
@@ -145,14 +169,7 @@ func CalculateSandboxCapacity(evidence CapacityEvidence) (CapacityPlan, error) {
 	}
 
 	baseline := memAvailableP1(businessValues)
-	parentCandidate := baseline - capacityCoreReserve
-	if parentCandidate < 0 {
-		parentCandidate = 0
-	}
-	if parentCandidate > capacityParentPOCMax {
-		parentCandidate = capacityParentPOCMax
-	}
-	parentMax := floorBytes(parentCandidate, capacityParentFloorQuantum)
+	parentMax := parentMaxFromBaseline(baseline)
 	workloadMax := parentMax - capacityControlReserve - capacityParentHeadroom
 	if workloadMax < 0 {
 		workloadMax = 0
@@ -182,6 +199,17 @@ func CalculateSandboxCapacity(evidence CapacityEvidence) (CapacityPlan, error) {
 		workloadMax < capacityWorkloadMinimum {
 		return plan, ErrCapacityInsufficient
 	}
+	plan.seal = capacityPlanSeal{
+		baselineBytes:         plan.BaselineBytes,
+		parentMaxBytes:        plan.ParentMaxBytes,
+		workloadMaxBytes:      plan.WorkloadMaxBytes,
+		workloadHighBytes:     plan.WorkloadHighBytes,
+		workloadRecoveryBytes: plan.WorkloadRecoveryBytes,
+		workloadShedBytes:     plan.WorkloadShedBytes,
+		controlHighBytes:      plan.ControlHighBytes,
+		controlMaxBytes:       plan.ControlMaxBytes,
+		parentHeadroomBytes:   plan.ParentHeadroomBytes,
+	}
 	plan.ready = true
 	return plan, nil
 }
@@ -192,19 +220,20 @@ func (p CapacityPlan) SystemdValues() (map[string]int64, error) {
 		return nil, ErrCapacityInsufficient
 	}
 	return map[string]int64{
-		"NUMIND_SANDBOX_PARENT_MEMORY_MAX_BYTES":        p.ParentMaxBytes,
-		"NUMIND_SANDBOX_WORKLOAD_MEMORY_MAX_BYTES":      p.WorkloadMaxBytes,
-		"NUMIND_SANDBOX_WORKLOAD_MEMORY_HIGH_BYTES":     p.WorkloadHighBytes,
-		"NUMIND_SANDBOX_WORKLOAD_MEMORY_RECOVERY_BYTES": p.WorkloadRecoveryBytes,
-		"NUMIND_SANDBOX_WORKLOAD_MEMORY_SHED_BYTES":     p.WorkloadShedBytes,
-		"NUMIND_SANDBOX_CONTROL_MEMORY_HIGH_BYTES":      p.ControlHighBytes,
-		"NUMIND_SANDBOX_CONTROL_MEMORY_MAX_BYTES":       p.ControlMaxBytes,
-		"NUMIND_SANDBOX_PARENT_HEADROOM_BYTES":          p.ParentHeadroomBytes,
+		"NUMIND_SANDBOX_PARENT_MEMORY_MAX_BYTES":        p.seal.parentMaxBytes,
+		"NUMIND_SANDBOX_WORKLOAD_MEMORY_MAX_BYTES":      p.seal.workloadMaxBytes,
+		"NUMIND_SANDBOX_WORKLOAD_MEMORY_HIGH_BYTES":     p.seal.workloadHighBytes,
+		"NUMIND_SANDBOX_WORKLOAD_MEMORY_RECOVERY_BYTES": p.seal.workloadRecoveryBytes,
+		"NUMIND_SANDBOX_WORKLOAD_MEMORY_SHED_BYTES":     p.seal.workloadShedBytes,
+		"NUMIND_SANDBOX_CONTROL_MEMORY_HIGH_BYTES":      p.seal.controlHighBytes,
+		"NUMIND_SANDBOX_CONTROL_MEMORY_MAX_BYTES":       p.seal.controlMaxBytes,
+		"NUMIND_SANDBOX_PARENT_HEADROOM_BYTES":          p.seal.parentHeadroomBytes,
 	}, nil
 }
 
 func validReadyCapacityPlan(plan CapacityPlan) bool {
-	expectedWorkload := plan.ParentMaxBytes -
+	expectedParent := parentMaxFromBaseline(plan.seal.baselineBytes)
+	expectedWorkload := expectedParent -
 		capacityControlReserve -
 		capacityParentHeadroom
 	expectedHigh := expectedWorkload * 90 / 100
@@ -212,17 +241,27 @@ func validReadyCapacityPlan(plan CapacityPlan) bool {
 		expectedHigh = capacityWorkloadHighMax
 	}
 	return plan.ready &&
-		plan.ParentMaxBytes >= capacityParentMinimum &&
-		plan.ParentMaxBytes <= capacityParentPOCMax &&
-		plan.ParentMaxBytes%capacityParentFloorQuantum == 0 &&
+		expectedParent >= capacityParentMinimum &&
+		expectedParent <= capacityParentPOCMax &&
+		expectedParent%capacityParentFloorQuantum == 0 &&
 		expectedWorkload >= capacityWorkloadMinimum &&
-		plan.WorkloadMaxBytes == expectedWorkload &&
-		plan.WorkloadHighBytes == expectedHigh &&
-		plan.WorkloadRecoveryBytes == expectedWorkload*80/100 &&
-		plan.WorkloadShedBytes == expectedWorkload*96/100 &&
-		plan.ControlHighBytes == capacityControlHigh &&
-		plan.ControlMaxBytes == capacityControlReserve &&
-		plan.ParentHeadroomBytes == capacityParentHeadroom
+		plan.seal.parentMaxBytes == expectedParent &&
+		plan.seal.workloadMaxBytes == expectedWorkload &&
+		plan.seal.workloadHighBytes == expectedHigh &&
+		plan.seal.workloadRecoveryBytes == expectedWorkload*80/100 &&
+		plan.seal.workloadShedBytes == expectedWorkload*96/100 &&
+		plan.seal.controlHighBytes == capacityControlHigh &&
+		plan.seal.controlMaxBytes == capacityControlReserve &&
+		plan.seal.parentHeadroomBytes == capacityParentHeadroom &&
+		plan.BaselineBytes == plan.seal.baselineBytes &&
+		plan.ParentMaxBytes == plan.seal.parentMaxBytes &&
+		plan.WorkloadMaxBytes == plan.seal.workloadMaxBytes &&
+		plan.WorkloadHighBytes == plan.seal.workloadHighBytes &&
+		plan.WorkloadRecoveryBytes == plan.seal.workloadRecoveryBytes &&
+		plan.WorkloadShedBytes == plan.seal.workloadShedBytes &&
+		plan.ControlHighBytes == plan.seal.controlHighBytes &&
+		plan.ControlMaxBytes == plan.seal.controlMaxBytes &&
+		plan.ParentHeadroomBytes == plan.seal.parentHeadroomBytes
 }
 
 func capacityMinimumDuration(
@@ -270,9 +309,26 @@ func businessEvidenceCoversWindow(
 	return true
 }
 
+func isCapacityBusinessWindow(observedAt time.Time) bool {
+	hour := observedAt.In(capacityBusinessTimezone).Hour()
+	return hour >= capacityBusinessStartHour &&
+		hour < capacityBusinessEndHour
+}
+
 func floorBytes(value int64, quantum int64) int64 {
 	if value <= 0 || quantum <= 0 {
 		return 0
 	}
 	return value / quantum * quantum
+}
+
+func parentMaxFromBaseline(baseline int64) int64 {
+	parentCandidate := baseline - capacityCoreReserve
+	if parentCandidate < 0 {
+		parentCandidate = 0
+	}
+	if parentCandidate > capacityParentPOCMax {
+		parentCandidate = capacityParentPOCMax
+	}
+	return floorBytes(parentCandidate, capacityParentFloorQuantum)
 }

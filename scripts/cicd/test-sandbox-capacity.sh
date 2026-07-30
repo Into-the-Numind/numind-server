@@ -17,7 +17,9 @@ make_samples() {
       print "observed_at_epoch,mem_available_bytes,business_window"
       for (i = 0; i < count; i++) {
         timestamp = int(start + ((end - start) * i / (count - 1)))
-        print timestamp "," value ",1"
+        local_hour = int(((timestamp + 8 * 60 * 60) % (24 * 60 * 60)) / (60 * 60))
+        business = (local_hour >= 8 && local_hour < 23) ? 1 : 0
+        print timestamp "," value "," business
       }
     }
   ' >"$output"
@@ -110,7 +112,7 @@ import sys
 with open(sys.argv[1], encoding="utf-8") as source:
     result = json.load(source)
 assert result["status"] == "blocked"
-assert result["reason"] == "insufficient_evidence"
+assert result["reason"] == "invalid_evidence"
 assert "systemd" not in result
 PY
 

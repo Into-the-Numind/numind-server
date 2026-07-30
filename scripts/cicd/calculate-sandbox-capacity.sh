@@ -56,6 +56,9 @@ MAX_BUSINESS_GAP_SECONDS = 24 * 60 * 60
 MAX_EVIDENCE_AGE_SECONDS = 60 * 60
 MAX_FUTURE_SKEW_SECONDS = 5 * 60
 BUSINESS_DIVISOR = 6
+BUSINESS_START_HOUR = 8
+BUSINESS_END_HOUR = 23
+BUSINESS_UTC_OFFSET_SECONDS = 8 * 60 * 60
 MINIMUM_SECONDS = {
     "historical": 7 * 24 * 60 * 60,
     "fresh": 72 * 60 * 60,
@@ -90,7 +93,9 @@ sample_path = sys.argv[2]
 samples = []
 source = None
 try:
-    flags = os.O_RDONLY | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0)
+    if not hasattr(os, "O_NOFOLLOW"):
+        raise ValueError("O_NOFOLLOW is required")
+    flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW
     descriptor = os.open(sample_path, flags)
     file_stat = os.fstat(descriptor)
     if not stat.S_ISREG(file_stat.st_mode) or file_stat.st_nlink != 1:
@@ -120,7 +125,33 @@ try:
                 raise ValueError("invalid business-window flag")
             if observed <= 0 or available <= 0 or available > SAMPLE_MAXIMUM:
                 raise ValueError("sample outside fixed bounds")
-            samples.append((observed, available, row[2] == "1"))
+            local_hour = (
+                (observed + BUSINESS_UTC_OFFSET_SECONDS)
+                % (24 * 60 * 60)
+                // (60 * 60)
+            )
+            expected_business = (
+                BUSINESS_START_HOUR
+                <= local_hour
+                < BUSINESS_END_HOUR
+            )
+            if (row[2] == "1") != expected_business:
+                raise ValueError("business-window flag disagrees with timestamp")
+            samples.append((observed, available, expected_business))
+        after_stat = os.fstat(descriptor)
+        stable_fields = (
+            "st_dev",
+            "st_ino",
+            "st_nlink",
+            "st_size",
+            "st_mtime_ns",
+            "st_ctime_ns",
+        )
+        if any(
+            getattr(file_stat, field) != getattr(after_stat, field)
+            for field in stable_fields
+        ):
+            raise ValueError("evidence changed while being read")
 except (OSError, UnicodeError, ValueError, csv.Error):
     blocked(
         "invalid_evidence",
