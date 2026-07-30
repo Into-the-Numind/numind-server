@@ -1,8 +1,23 @@
 # 构建阶段 - 在容器内编译，保证 glibc 版本一致
 FROM golang:1.24-bookworm AS builder
 
+ARG DEBIAN_MIRROR=https://mirrors.aliyun.com/debian
+
+RUN if [ -n "$DEBIAN_MIRROR" ]; then \
+      for source_file in /etc/apt/sources.list /etc/apt/sources.list.d/*.sources; do \
+        [ -f "$source_file" ] || continue; \
+        sed -i \
+          -e "s|http://deb.debian.org/debian|${DEBIAN_MIRROR}|g" \
+          -e "s|https://deb.debian.org/debian|${DEBIAN_MIRROR}|g" \
+          -e "s|http://security.debian.org/debian-security|${DEBIAN_MIRROR}-security|g" \
+          -e "s|https://security.debian.org/debian-security|${DEBIAN_MIRROR}-security|g" \
+          "$source_file"; \
+      done; \
+    fi
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc g++ libc6-dev libsqlite3-dev libwebp-dev git
+    gcc g++ libc6-dev libsqlite3-dev libwebp-dev git \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
@@ -23,6 +38,19 @@ FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=Asia/Shanghai
+ARG UBUNTU_MIRROR=https://mirrors.aliyun.com/ubuntu
+
+RUN if [ -n "$UBUNTU_MIRROR" ]; then \
+      for source_file in /etc/apt/sources.list /etc/apt/sources.list.d/*.sources; do \
+        [ -f "$source_file" ] || continue; \
+        sed -i \
+          -e "s|http://archive.ubuntu.com/ubuntu|${UBUNTU_MIRROR}|g" \
+          -e "s|https://archive.ubuntu.com/ubuntu|${UBUNTU_MIRROR}|g" \
+          -e "s|http://security.ubuntu.com/ubuntu|${UBUNTU_MIRROR}|g" \
+          -e "s|https://security.ubuntu.com/ubuntu|${UBUNTU_MIRROR}|g" \
+          "$source_file"; \
+      done; \
+    fi
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates wget tzdata libwebp-dev libsqlite3-0 libgomp1 \
