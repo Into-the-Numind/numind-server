@@ -1,17 +1,20 @@
 package sandbox
 
 import (
-	"archive/tar"
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os/exec"
 	"path"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
+
+	"numind-server/internal/numind/sandboxbroker"
 )
 
 // DockerClient is the minimal Docker primitive interface. The real impl
@@ -24,15 +27,13 @@ type DockerClient interface {
 	Inspect(ctx context.Context, containerID string) (InspectResult, error)
 
 	// CopyToContainer writes `content` into the container at `dstPath`.
-	// Implemented via `docker exec -i <CID> tar -xf - -C <dir>` (NOT `docker cp` —
-	// see the impl comment for the Docker 28.x tmpfs bug). Track 4: used by
-	// CopyFileIn to inject input files into /workdir/input/ and by AcquireForSkill
-	// to stage skill files into /skills/<name>/.
+	// It streams through a fixed Docker exec command with bounded memory.
+	// Track 4: used by CopyFileIn to inject input files into /workdir/input/
+	// and by AcquireForSkill to stage skill files into /skills/<name>/.
 	CopyToContainer(ctx context.Context, containerID, dstPath string, content io.Reader) error
 
 	// CopyFromContainer copies `srcPath` from the container into `hostDstDir`.
-	// Implemented via `docker exec <CID> tar -cf -` piped through host `tar -xf -`
-	// (NOT `docker cp` — same Docker 28.x tmpfs bug applies in both directions).
+	// It incrementally validates and extracts a bounded tar stream in Go.
 	// Track 4: used by CollectOutputs to pull /workdir/output/ files.
 	CopyFromContainer(ctx context.Context, containerID, srcPath, hostDstDir string) error
 
@@ -246,7 +247,10 @@ func (c *dockerCLIClient) Exec(ctx context.Context, containerID string, cmd []st
 
 	start := time.Now()
 	execCmd := exec.CommandContext(ctx, dockerBinary, args...)
-	stdoutBuf, stderrBuf, exitCode, runErr := runWithCapture(execCmd)
+	stdoutBuf, stderrBuf, exitCode, outputExceeded, runErr := runWithCapture(
+		execCmd,
+		sandboxbroker.MaxExecOutputBytes,
+	)
 	dur := time.Since(start)
 
 	res := ExecResult{
@@ -254,6 +258,12 @@ func (c *dockerCLIClient) Exec(ctx context.Context, containerID string, cmd []st
 		Stderr:   stderrBuf,
 		ExitCode: exitCode,
 		Duration: dur,
+	}
+	if outputExceeded {
+		return res, ErrOutputTooLarge
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return res, fmt.Errorf("docker exec: %w", ctxErr)
 	}
 	if runErr != nil && exitCode == 0 {
 		// runErr is something other than a non-zero exit (e.g. ctx cancel)
@@ -333,69 +343,72 @@ func (c *dockerCLIClient) ListByLabel(ctx context.Context, label string) ([]stri
 
 // CopyToContainer writes `content` as a file at `dstPath` inside the container.
 //
-// Implementation uses `docker exec -i <CID> tar -xf - -C <dir>` with an in-memory
-// tar archive on stdin. This deliberately AVOIDS `docker cp`, which in Docker 28.x
-// is broken for tmpfs mounts under `--read-only` rootfs: it fails with
-// `Error response from daemon: Could not find the file <path> in container`
-// even when the path exists and is writable via `docker exec`. Verified on dev
-// 2026-05-29 — both /workdir and /skills (the sandbox's writable tmpfs mounts)
-// trigger the bug. `docker exec` uses a different daemon code path and works.
+// Implementation streams directly to a fixed shell redirection with a 64 KiB
+// buffer. This deliberately avoids both docker cp (broken for Docker 28.x
+// tmpfs under a read-only rootfs) and the old io.ReadAll + in-memory tar path.
 //
 // The parent directory of dstPath must already exist in the container; callers
 // stage it via ExecMkdir.
 func (c *dockerCLIClient) CopyToContainer(ctx context.Context, containerID, dstPath string, content io.Reader) error {
-	data, err := io.ReadAll(content)
+	cleanPath, err := canonicalDockerCopyInPath(dstPath)
 	if err != nil {
-		return fmt.Errorf("docker cp to container: read content: %w", err)
+		return err
 	}
-
-	buf, err := buildSingleFileTar(path.Base(dstPath), data)
-	if err != nil {
-		return fmt.Errorf("docker cp to container: %w", err)
+	reader, ok := safeDockerCopyReader(content)
+	if !ok {
+		return ErrSandboxPolicyDenied
 	}
 
 	cmd := exec.CommandContext(ctx, dockerBinary,
-		"exec", "-i", containerID,
-		"tar", "-xf", "-", "-C", path.Dir(dstPath),
+		"exec", "-i", containerID, "/bin/sh", "-c",
+		`set -C; umask 077; exec cat > "$1"`,
+		"numind-copy-in", cleanPath,
 	)
-	cmd.Stdin = buf
-	out, err := cmd.CombinedOutput()
+	stdin, err := cmd.StdinPipe()
 	if err != nil {
-		return fmt.Errorf("docker cp to container: exec tar: %w (output=%s)", err, string(out))
+		return fmt.Errorf("docker cp to container: stdin: %w", err)
+	}
+	stderr := newLimitedTextBuffer(64 << 10)
+	cmd.Stderr = stderr
+	if err := cmd.Start(); err != nil {
+		_ = stdin.Close()
+		return fmt.Errorf("docker cp to container: start: %w", err)
+	}
+	_, copyErr := sandboxbroker.CopyBounded(
+		ctx,
+		stdin,
+		reader,
+		sandboxbroker.MaxSingleFileBytes,
+		sandboxbroker.ErrStreamInputTooLarge,
+	)
+	closeErr := stdin.Close()
+	if copyErr != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		return mapDockerStreamError(copyErr)
+	}
+	waitErr := cmd.Wait()
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+	if closeErr != nil {
+		return fmt.Errorf("docker cp to container: close stream: %w", closeErr)
+	}
+	if waitErr != nil {
+		return fmt.Errorf(
+			"docker cp to container: stream: %w (stderr=%s)",
+			waitErr,
+			stderr.String(),
+		)
 	}
 	return nil
 }
 
-// buildSingleFileTar returns a tar archive containing one regular file at
-// `name` (relative path) with the given bytes. Extracted via `tar -xf - -C <dir>`,
-// the file lands at <dir>/<name>. Extracted for unit-test reachability of the
-// tar-encoding logic without invoking docker.
-func buildSingleFileTar(name string, data []byte) (*bytes.Buffer, error) {
-	var buf bytes.Buffer
-	tw := tar.NewWriter(&buf)
-	if err := tw.WriteHeader(&tar.Header{
-		Name:    name,
-		Mode:    0o644,
-		Size:    int64(len(data)),
-		ModTime: time.Now(),
-	}); err != nil {
-		return nil, fmt.Errorf("tar header: %w", err)
-	}
-	if _, err := tw.Write(data); err != nil {
-		return nil, fmt.Errorf("tar body: %w", err)
-	}
-	if err := tw.Close(); err != nil {
-		return nil, fmt.Errorf("tar close: %w", err)
-	}
-	return &buf, nil
-}
-
 // CopyFromContainer copies `srcPath` from the container into `hostDstDir`.
 //
-// Like CopyToContainer, this uses `docker exec <CID> tar -cf -` + a host-side
-// `tar -xf -` instead of `docker cp`, which is broken for tmpfs mounts under
-// `--read-only` rootfs in Docker 28.x (fails in BOTH directions — verified on
-// dev 2026-05-29 with `/workdir/output` and `/skills/*`).
+// Like CopyToContainer, this avoids docker cp. It streams `docker exec tar`
+// directly through the descriptor-relative Go extractor, so output is never
+// buffered in memory or delegated to a host tar process.
 //
 // Mirrors docker cp's "/." suffix semantics:
 //   - srcPath = "/workdir/output"   → hostDstDir/output/<files>  (dir wrapped)
@@ -404,43 +417,51 @@ func buildSingleFileTar(name string, data []byte) (*bytes.Buffer, error) {
 // A missing srcPath returns nil (the caller — eg CollectOutputs — treats an
 // empty output directory as legitimate when the Python script produced nothing).
 func (c *dockerCLIClient) CopyFromContainer(ctx context.Context, containerID, srcPath, hostDstDir string) error {
-	var tarSrcDir, tarSrcEntry string
-	if strings.HasSuffix(srcPath, "/.") {
-		tarSrcDir = strings.TrimSuffix(srcPath, "/.")
-		tarSrcEntry = "."
-	} else {
-		tarSrcDir = path.Dir(srcPath)
-		tarSrcEntry = path.Base(srcPath)
+	source, err := sandboxbroker.CanonicalCopyOutPath(srcPath)
+	if err != nil {
+		return ErrSandboxPolicyDenied
 	}
 
-	// Produce the tar stream inside the container.
-	var stdoutBuf, stderrBuf bytes.Buffer
+	// Produce the tar stream inside the container and extract it incrementally.
 	produce := exec.CommandContext(ctx, dockerBinary,
 		"exec", containerID,
-		"tar", "-cf", "-", "-C", tarSrcDir, tarSrcEntry,
+		"tar", "-cf", "-", "-C", source.Directory, source.Entry,
 	)
-	produce.Stdout = &stdoutBuf
-	produce.Stderr = &stderrBuf
-	if err := produce.Run(); err != nil {
-		s := stderrBuf.String()
-		if strings.Contains(s, "No such file") || strings.Contains(s, "no such file") {
+	stdout, err := produce.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("docker cp from container: stdout: %w", err)
+	}
+	stderr := newLimitedTextBuffer(64 << 10)
+	produce.Stderr = stderr
+	if err := produce.Start(); err != nil {
+		return fmt.Errorf("docker cp from container: start: %w", err)
+	}
+	_, extractErr := sandboxbroker.ExtractTarStream(
+		ctx,
+		stdout,
+		hostDstDir,
+		sandboxbroker.DefaultCopyOutLimits(),
+	)
+	if extractErr != nil {
+		_ = produce.Process.Kill()
+	}
+	waitErr := produce.Wait()
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+	if extractErr != nil {
+		return mapDockerStreamError(extractErr)
+	}
+	if waitErr != nil {
+		message := stderr.String()
+		if strings.Contains(message, "No such file") || strings.Contains(message, "no such file") {
 			return nil
 		}
-		return fmt.Errorf("docker cp from container: source tar: %w (stderr=%s)", err, s)
-	}
-
-	// Empty stdout = nothing to extract. Avoids invoking host tar with empty input,
-	// which on some implementations errors with "This does not look like a tar archive".
-	if stdoutBuf.Len() == 0 {
-		return nil
-	}
-
-	// Extract the tar stream into hostDstDir using the host's `tar` binary
-	// (present in both Ubuntu base images we run — numind-server runtime + dev/qa/prod hosts).
-	extract := exec.CommandContext(ctx, "tar", "-xf", "-", "-C", hostDstDir)
-	extract.Stdin = &stdoutBuf
-	if out, err := extract.CombinedOutput(); err != nil {
-		return fmt.Errorf("docker cp from container: extract tar: %w (output=%s)", err, string(out))
+		return fmt.Errorf(
+			"docker cp from container: source tar: %w (stderr=%s)",
+			waitErr,
+			message,
+		)
 	}
 	return nil
 }
@@ -467,16 +488,69 @@ func captureStderr(err error) string {
 	return ""
 }
 
-// runWithCapture runs cmd, captures stdout/stderr separately, and returns
-// the exit code. A non-zero exit code is NOT returned as an error from
-// this helper; the caller treats it as data.
-func runWithCapture(cmd *exec.Cmd) (stdout, stderr string, exitCode int, err error) {
-	var outBuf, errBuf strings.Builder
-	cmd.Stdout = &outBuf
-	cmd.Stderr = &errBuf
+func canonicalDockerCopyInPath(raw string) (string, error) {
+	if strings.HasPrefix(path.Clean(raw), "/skills/") {
+		parts := strings.Split(strings.TrimPrefix(path.Clean(raw), "/skills/"), "/")
+		if len(parts) < 2 {
+			return "", ErrSandboxPolicyDenied
+		}
+		clean, err := sandboxbroker.CanonicalCopyInPath(raw, []string{parts[0]})
+		if err != nil {
+			return "", ErrSandboxPolicyDenied
+		}
+		return clean, nil
+	}
+	clean, err := sandboxbroker.CanonicalCopyInPath(raw, nil)
+	if err != nil {
+		return "", ErrSandboxPolicyDenied
+	}
+	return clean, nil
+}
+
+func safeDockerCopyReader(reader io.Reader) (io.ReadCloser, bool) {
+	switch typed := reader.(type) {
+	case *bytes.Buffer:
+		return io.NopCloser(typed), true
+	case *bytes.Reader:
+		return io.NopCloser(typed), true
+	case *strings.Reader:
+		return io.NopCloser(typed), true
+	case *io.PipeReader:
+		return typed, true
+	default:
+		return nil, false
+	}
+}
+
+func mapDockerStreamError(err error) error {
+	switch {
+	case errors.Is(err, sandboxbroker.ErrStreamInputTooLarge):
+		return ErrInputTooLarge
+	case errors.Is(err, sandboxbroker.ErrStreamOutputTooLarge):
+		return ErrOutputTooLarge
+	case errors.Is(err, sandboxbroker.ErrStreamPolicyDenied):
+		return ErrSandboxPolicyDenied
+	default:
+		return err
+	}
+}
+
+// runWithCapture runs cmd with a shared stdout+stderr ceiling. A non-zero exit
+// code remains result data; output overflow kills the command and is reported
+// separately.
+func runWithCapture(
+	cmd *exec.Cmd,
+	maxBytes int64,
+) (stdout string, stderr string, exitCode int, exceeded bool, err error) {
+	capture := newCombinedCapture(maxBytes, func() {
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+	})
+	cmd.Stdout = capture.stdoutWriter()
+	cmd.Stderr = capture.stderrWriter()
 	err = cmd.Run()
-	stdout = outBuf.String()
-	stderr = errBuf.String()
+	stdout, stderr, exceeded = capture.snapshot()
 	if err == nil {
 		exitCode = 0
 		return
@@ -491,4 +565,90 @@ func runWithCapture(cmd *exec.Cmd) (stdout, stderr string, exitCode int, err err
 	// it as-is. exitCode is irrelevant in that case.
 	exitCode = -1
 	return
+}
+
+type limitedTextBuffer struct {
+	mu        sync.Mutex
+	remaining int64
+	builder   strings.Builder
+}
+
+func newLimitedTextBuffer(maxBytes int64) *limitedTextBuffer {
+	return &limitedTextBuffer{remaining: maxBytes}
+}
+
+func (b *limitedTextBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	allowed := int64(len(p))
+	if allowed > b.remaining {
+		allowed = b.remaining
+	}
+	if allowed > 0 {
+		_, _ = b.builder.Write(p[:allowed])
+		b.remaining -= allowed
+	}
+	return len(p), nil
+}
+
+func (b *limitedTextBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.builder.String()
+}
+
+type combinedCapture struct {
+	mu        sync.Mutex
+	remaining int64
+	stdout    strings.Builder
+	stderr    strings.Builder
+	exceeded  bool
+	killOnce  sync.Once
+	kill      func()
+}
+
+type combinedCaptureWriter struct {
+	capture *combinedCapture
+	stderr  bool
+}
+
+func newCombinedCapture(maxBytes int64, kill func()) *combinedCapture {
+	return &combinedCapture{remaining: maxBytes, kill: kill}
+}
+
+func (c *combinedCapture) stdoutWriter() io.Writer {
+	return combinedCaptureWriter{capture: c}
+}
+
+func (c *combinedCapture) stderrWriter() io.Writer {
+	return combinedCaptureWriter{capture: c, stderr: true}
+}
+
+func (w combinedCaptureWriter) Write(p []byte) (int, error) {
+	w.capture.mu.Lock()
+	allowed := int64(len(p))
+	if allowed > w.capture.remaining {
+		allowed = w.capture.remaining
+		w.capture.exceeded = true
+	}
+	if allowed > 0 {
+		if w.stderr {
+			_, _ = w.capture.stderr.Write(p[:allowed])
+		} else {
+			_, _ = w.capture.stdout.Write(p[:allowed])
+		}
+		w.capture.remaining -= allowed
+	}
+	exceeded := w.capture.exceeded
+	w.capture.mu.Unlock()
+	if exceeded {
+		w.capture.killOnce.Do(w.capture.kill)
+	}
+	return len(p), nil
+}
+
+func (c *combinedCapture) snapshot() (string, string, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.stdout.String(), c.stderr.String(), c.exceeded
 }

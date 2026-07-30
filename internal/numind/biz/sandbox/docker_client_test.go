@@ -1,13 +1,15 @@
 package sandbox
 
 import (
-	"archive/tar"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
-	"io"
+	"os/exec"
 	"strings"
 	"testing"
+
+	"numind-server/internal/numind/sandboxbroker"
 )
 
 // ===========================================================================
@@ -150,43 +152,77 @@ func TestBuildSpawnArgs_NoSecurityOptsWhenEmpty(t *testing.T) {
 	}
 }
 
-// TestBuildSingleFileTar_RoundTrip locks the wire format CopyToContainer puts
-// on `docker exec -i tar -xf -`'s stdin: a single regular-file entry whose
-// extracted path is the basename passed in. This is the regression test for
-// the 2026-05-29 incident where `docker cp` was silently broken for tmpfs
-// mounts in Docker 28.x — CopyToContainer was rewritten to pipe a tar archive
-// through `docker exec` instead, and this test asserts the encoded bytes are
-// the contract `tar -xf` will expect.
-func TestBuildSingleFileTar_RoundTrip(t *testing.T) {
-	payload := []byte("hello, skill files — also non-ascii: 中文 + binary \x00\x01\xff")
-	buf, err := buildSingleFileTar("SKILL.md", payload)
-	if err != nil {
-		t.Fatalf("buildSingleFileTar err = %v", err)
+func TestDockerCopyPathCanonicalization(t *testing.T) {
+	for _, allowed := range []string{
+		"/workdir/task.py",
+		"/workdir/input/data.csv",
+		"/skills/document-system/SKILL.md",
+	} {
+		got, err := canonicalDockerCopyInPath(allowed)
+		if err != nil || got != allowed {
+			t.Fatalf("canonicalDockerCopyInPath(%q) = %q, %v", allowed, got, err)
+		}
 	}
+	for _, denied := range []string{
+		"relative",
+		"/etc/passwd",
+		"/workdir/../etc/passwd",
+		"/skills/document-system",
+		"/skills/bad=label/SKILL.md",
+	} {
+		if _, err := canonicalDockerCopyInPath(denied); !errors.Is(err, ErrSandboxPolicyDenied) {
+			t.Fatalf("canonicalDockerCopyInPath(%q) err = %v", denied, err)
+		}
+	}
+}
 
-	tr := tar.NewReader(buf)
-	hdr, err := tr.Next()
+func TestDockerExecCaptureAppliesCombinedOutputCeiling(t *testing.T) {
+	cmd := exec.Command(
+		"/bin/sh",
+		"-c",
+		"printf '1234567890'; printf 'abcdefghij' >&2; while :; do printf x; done",
+	)
+	stdout, stderr, _, exceeded, err := runWithCapture(cmd, 15)
 	if err != nil {
-		t.Fatalf("tar.Next first entry err = %v; archive must contain one entry", err)
+		t.Fatalf("runWithCapture: %v", err)
 	}
-	if hdr.Name != "SKILL.md" {
-		t.Errorf("entry name = %q; want SKILL.md (`tar -xf - -C <dir>` lands it at <dir>/SKILL.md)", hdr.Name)
+	if !exceeded {
+		t.Fatal("combined stdout/stderr ceiling did not trigger")
 	}
-	if hdr.Size != int64(len(payload)) {
-		t.Errorf("entry size = %d; want %d", hdr.Size, len(payload))
+	if len(stdout)+len(stderr) != 15 {
+		t.Fatalf("captured %d bytes; want exactly 15", len(stdout)+len(stderr))
 	}
-	if hdr.Mode&0o777 != 0o644 {
-		t.Errorf("entry mode = %o; want 0644", hdr.Mode&0o777)
-	}
-	body, err := io.ReadAll(tr)
-	if err != nil {
-		t.Fatalf("read entry body err = %v", err)
-	}
-	if !bytes.Equal(body, payload) {
-		t.Errorf("body round-trip mismatch:\n got %q\nwant %q", body, payload)
-	}
+}
 
-	if _, err := tr.Next(); err != io.EOF {
-		t.Errorf("expected EOF after single entry, got err=%v (archive must contain exactly one file)", err)
+func TestDockerExecCapturePreservesSeparateStreamsAndExitCode(t *testing.T) {
+	cmd := exec.Command(
+		"/bin/sh",
+		"-c",
+		"printf stdout; printf stderr >&2; exit 7",
+	)
+	stdout, stderr, exitCode, exceeded, err := runWithCapture(
+		cmd,
+		sandboxbroker.MaxExecOutputBytes,
+	)
+	if err != nil || exceeded || exitCode != 7 ||
+		stdout != "stdout" || stderr != "stderr" {
+		t.Fatalf(
+			"stdout=%q stderr=%q exit=%d exceeded=%v err=%v",
+			stdout,
+			stderr,
+			exitCode,
+			exceeded,
+			err,
+		)
+	}
+}
+
+func TestDockerLimitedTextBufferDoesNotGrowPastLimit(t *testing.T) {
+	buffer := newLimitedTextBuffer(5)
+	if _, err := buffer.Write(bytes.Repeat([]byte("x"), 1024)); err != nil {
+		t.Fatal(err)
+	}
+	if got := buffer.String(); got != "xxxxx" {
+		t.Fatalf("buffer = %q; want five bytes", got)
 	}
 }
