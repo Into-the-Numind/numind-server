@@ -138,6 +138,19 @@ func newChatbotBiz(db *gorm.DB) chatbot.IChatbotBiz {
 	return chatbot.NewChatbotBiz(store.NewTestStore(db), nil)
 }
 
+func TestUpdateStatus_IdempotentSameStatus(t *testing.T) {
+	db := newChatbotTestDB(t)
+	b := newChatbotBiz(db)
+	ownerID := insertUserRow(t, db, nil)
+	chatbotID := insertChatbotConfig(t, db, ownerID, "published-bot", model.ChatbotStatusPublished)
+
+	require.NoError(t, b.UpdateStatus(context.Background(), ownerID, chatbotID, model.ChatbotStatusPublished))
+
+	var row model.ChatbotConfig
+	require.NoError(t, db.First(&row, chatbotID).Error)
+	assert.Equal(t, model.ChatbotStatusPublished, row.Status)
+}
+
 // ============================================================================
 // ListVisibleChatbots
 // ============================================================================
