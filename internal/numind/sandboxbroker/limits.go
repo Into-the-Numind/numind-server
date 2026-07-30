@@ -208,6 +208,29 @@ type rateLimitedReader struct {
 	rate   *aggregateByteRate
 }
 
+type hardLimitReader struct {
+	source   io.Reader
+	remain   int64
+	limitErr error
+}
+
+func (r *hardLimitReader) Read(buffer []byte) (int, error) {
+	if r.remain > 0 {
+		if int64(len(buffer)) > r.remain {
+			buffer = buffer[:r.remain]
+		}
+		count, err := r.source.Read(buffer)
+		r.remain -= int64(count)
+		return count, err
+	}
+	var probe [1]byte
+	count, err := r.source.Read(probe[:])
+	if count > 0 {
+		return 0, r.limitErr
+	}
+	return 0, err
+}
+
 func (r *rateLimitedReader) Read(buffer []byte) (int, error) {
 	if len(buffer) > ServerCopyBufferBytes {
 		buffer = buffer[:ServerCopyBufferBytes]

@@ -123,7 +123,14 @@ func (s *JournalRPCService) CreateLease(
 	peer PeerCredentials,
 	input CreateLeaseRPCRequest,
 ) (CreateLeaseRPCResponse, error) {
-	value, err, _ := s.creates.Do(input.RequestID, func() (any, error) {
+	flightKey := operationFingerprint(
+		"create_flight",
+		input.RequestID,
+		peer.UID,
+		input.OwnerID,
+		input.OwnerBootID,
+	)
+	value, err, _ := s.creates.Do(flightKey, func() (any, error) {
 		now := canonicalJournalTime(time.Now())
 		expiresAt := now.Add(RuntimeSessionTimeout)
 		candidateID := uuid.NewString()
@@ -335,6 +342,18 @@ func (s *JournalRPCService) CopyIn(
 	if err != nil {
 		return err
 	}
+	if err := CheckCopyBudget(
+		CopyInDirection,
+		lease.CopyInFiles,
+		lease.CopyInBytes,
+		0,
+	); err != nil {
+		return err
+	}
+	remaining := MaxCopyInBytes - lease.CopyInBytes
+	if remaining > MaxSingleFileBytes {
+		remaining = MaxSingleFileBytes
+	}
 	fingerprint := operationFingerprint("copy_in", leaseID, rawPath)
 	status, err := s.journal.reserveRPCOperation(
 		ctx,
@@ -356,7 +375,11 @@ func (s *JournalRPCService) CopyIn(
 		ctx,
 		lease.ContainerID,
 		rawPath,
-		reader,
+		&hardLimitReader{
+			source:   reader,
+			remain:   remaining,
+			limitErr: ErrStreamInputTooLarge,
+		},
 	)
 	if err != nil {
 		return err
@@ -561,7 +584,7 @@ func (s *JournalRPCService) Delete(
 		return err
 	}
 	if lease.State == LeaseTerminated {
-		return nil
+		return s.journal.recordTerminalDelete(ctx, lease, input.RequestID)
 	}
 	reason := TerminationCompleted
 	if lease.State != LeaseDestroying && lease.State != LeaseRecoveryPending {
@@ -707,8 +730,10 @@ func (s *JournalRPCService) markRecoveryPending(
 	if !CanTransition(lease.State, LeaseRecoveryPending) {
 		return
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), RuntimeExecTimeout)
+	defer cancel()
 	reconcile := "pending"
-	_, _, _ = s.journal.Transition(context.Background(), TransitionParams{
+	_, _, _ = s.journal.Transition(ctx, TransitionParams{
 		LeaseID:           lease.LeaseID,
 		RequestID:         derivedRPCRequestID(requestID, "recovery"),
 		To:                LeaseRecoveryPending,
@@ -908,6 +933,60 @@ func validRPCOperationKind(kind string) bool {
 	default:
 		return false
 	}
+}
+
+func (j *Journal) recordTerminalDelete(
+	ctx context.Context,
+	lease Lease,
+	requestID string,
+) error {
+	if j == nil || lease.State != LeaseTerminated || !validRequestID(requestID) {
+		return ErrRPCProtocol
+	}
+	fingerprint := operationFingerprint("delete", lease.LeaseID)
+	j.mu.RLock()
+	defer j.mu.RUnlock()
+	if j.closed {
+		return ErrJournalClosed
+	}
+	transaction, err := j.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin terminal delete replay: %w", err)
+	}
+	defer func() { _ = transaction.Rollback() }()
+	event, found, err := eventByRequestTx(ctx, transaction, requestID)
+	if err != nil {
+		return err
+	}
+	if found {
+		if event.LeaseID != lease.LeaseID {
+			return ErrIdempotencyConflict
+		}
+		if event.EventType == "transition" &&
+			event.StateTo == LeaseDestroying {
+			return nil
+		}
+		if event.EventType == "delete_completed" &&
+			event.RequestHash == fingerprint {
+			return nil
+		}
+		return ErrIdempotencyConflict
+	}
+	if err := insertEventTx(ctx, transaction, LeaseEvent{
+		RequestID:   requestID,
+		RequestHash: fingerprint,
+		LeaseID:     lease.LeaseID,
+		EventType:   "delete_completed",
+		StateFrom:   LeaseTerminated,
+		StateTo:     LeaseTerminated,
+		CreatedAt:   canonicalJournalTime(time.Now()),
+	}); err != nil {
+		return err
+	}
+	if err := transaction.Commit(); err != nil {
+		return fmt.Errorf("commit terminal delete replay: %w", err)
+	}
+	return nil
 }
 
 type CreateLeaseRPCRequest struct {
