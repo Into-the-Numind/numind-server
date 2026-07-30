@@ -111,6 +111,50 @@ UPDATE lease SET state='destroying' WHERE lease_id='lease-1'`,
 	}
 }
 
+func TestJournalLookupCreateReplayIsReadOnlyAndChecksIdentity(t *testing.T) {
+	journal := openTestJournal(t, testJournalPath(t))
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	params := testCreateParams("lease-candidate", "create-1", now)
+	if _, found, err := journal.LookupCreateReplay(
+		context.Background(),
+		params,
+	); err != nil || found {
+		t.Fatalf("missing replay found=%v error=%v", found, err)
+	}
+	var count int
+	if err := journal.db.QueryRow(`SELECT COUNT(*) FROM lease`).Scan(
+		&count,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("lookup wrote %d journal leases", count)
+	}
+
+	createdParams := params
+	createdParams.LeaseID = "lease-created"
+	created, _, err := journal.CreateLease(context.Background(), createdParams)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayed, found, err := journal.LookupCreateReplay(
+		context.Background(),
+		params,
+	)
+	if err != nil || !found || replayed.LeaseID != created.LeaseID {
+		t.Fatalf("replay=%#v found=%v error=%v", replayed, found, err)
+	}
+
+	conflict := params
+	conflict.OwnerID = "other-owner"
+	if _, _, err := journal.LookupCreateReplay(
+		context.Background(),
+		conflict,
+	); !errors.Is(err, ErrIdempotencyConflict) {
+		t.Fatalf("conflicting lookup error=%v", err)
+	}
+}
+
 func TestJournalSingleInstanceLock(t *testing.T) {
 	path := testJournalPath(t)
 	first := openTestJournal(t, path)

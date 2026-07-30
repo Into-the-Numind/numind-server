@@ -219,6 +219,8 @@ T1..T17 ───────────────────────> T
 - 新增 `internal/numind/sandboxbroker/readiness_test.go`
 - 修改 `internal/numind/sandboxbroker/scheduler.go`
 - 修改 `internal/numind/sandboxbroker/scheduler_test.go`
+- 修改 `internal/numind/sandboxbroker/journal.go`
+- 修改 `internal/numind/sandboxbroker/journal_test.go`
 - 修改 `internal/numind/sandboxbroker/server.go`
 - 修改 `internal/numind/sandboxbroker/server_test.go`
 
@@ -233,6 +235,10 @@ T1..T17 ───────────────────────> T
 - scheduler生产启动默认关闭；只有新鲜且完整的pressure/readiness结果才能打开。
 - 准入状态在FIFO真正获得slot时原子重检；已排队任务在门关闭后不得spawn，
   恢复后重新检查再按原顺序放行。
+- Ready/warm lease激活同样在发布Active前原子门禁；关闭时保留Ready。
+- 新请求在写journal前先做只读replay查询和准入预检，slot grant仍二次检查；
+  并发readiness同步串行发布，旧快照不能覆盖新快照。
+- 采样中断/无效样本映射503；真实内存压力映射429。
 
 **RED/验收**
 
@@ -312,6 +318,8 @@ T1..T17 ───────────────────────> T
   `statfs`字节与inode、固定镜像digest；先更新pressure/readiness，再通过
   `ReadinessChecker.SyncAdmission`同步实际scheduler准入门。独立watchdog在采样
   ticker停止或超过4秒未刷新时必须关闭scheduler准入；恢复时重新检查FIFO队首。
+- runner无论`Observe`是否返回采样错误都必须继续执行`SyncAdmission`；若
+  decision含`ShedLeaseID`则必须先执行回收，`SamplingGap`作为独立告警保留。
 - SIGTERM先关闭准入，最长300秒drain，再审计取消。
 - 无Prod DB/COS/LLM/飞书配置和网络listener。
 

@@ -387,6 +387,39 @@ func TestSchedulerProductionStartsClosedAndRechecksQueuedHead(
 	assertSchedulerCounts(t, scheduler, 1, 0, 0)
 }
 
+func TestSchedulerGatesWarmActivationAndCanRollbackPublication(
+	t *testing.T,
+) {
+	scheduler := newScheduler(1, 1, time.Second)
+	request := testSchedulerRequest(0, "owner-blue")
+	if err := scheduler.Acquire(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	if err := scheduler.MarkReady(request.LeaseID); err != nil {
+		t.Fatal(err)
+	}
+	scheduler.SetAdmission(false, ErrReadinessUnavailable)
+	if err := scheduler.Activate(request.LeaseID); !errors.Is(
+		err,
+		ErrReadinessUnavailable,
+	) {
+		t.Fatalf("closed warm activation error=%v", err)
+	}
+	assertSchedulerCounts(t, scheduler, 1, 0, 0)
+
+	scheduler.SetAdmission(true, nil)
+	if err := scheduler.Activate(request.LeaseID); err != nil {
+		t.Fatal(err)
+	}
+	if err := scheduler.RollbackActivation(request.LeaseID); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := scheduler.Snapshot()
+	if snapshot.Ready != 1 || snapshot.Active != 0 {
+		t.Fatalf("rollback snapshot=%#v", snapshot)
+	}
+}
+
 func testSchedulerRequest(index int, owner string) SchedulerRequest {
 	return SchedulerRequest{
 		RequestID: fmt.Sprintf("request-%d", index),

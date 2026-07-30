@@ -94,10 +94,11 @@ const (
 // JournalRPCService binds the v1 transport to the durable lease journal,
 // global scheduler, and fixed Rootless runtime.
 type JournalRPCService struct {
-	journal   *Journal
-	scheduler *Scheduler
-	runtime   ContainerRuntime
-	creates   singleflight.Group
+	journal    *Journal
+	scheduler  *Scheduler
+	runtime    ContainerRuntime
+	creates    singleflight.Group
+	activateMu sync.Mutex
 }
 
 // NewJournalRPCService builds the only production RPC operation service.
@@ -132,7 +133,7 @@ func (s *JournalRPCService) CreateLease(
 		now := canonicalJournalTime(time.Now())
 		expiresAt := now.Add(RuntimeSessionTimeout)
 		candidateID := uuid.NewString()
-		lease, replay, err := s.journal.CreateLease(ctx, CreateLeaseParams{
+		createParams := CreateLeaseParams{
 			LeaseID:          candidateID,
 			RequestID:        input.RequestID,
 			PeerUID:          int64(peer.UID),
@@ -142,7 +143,21 @@ func (s *JournalRPCService) CreateLease(
 			SandboxSessionID: 0,
 			CreatedAt:        now,
 			ExpiresAt:        expiresAt,
-		})
+		}
+		lease, replay, err := s.journal.LookupCreateReplay(ctx, createParams)
+		if err != nil {
+			return CreateLeaseRPCResponse{}, err
+		}
+		if replay {
+			if lease.State != LeaseReady {
+				return CreateLeaseRPCResponse{}, ErrRPCReplayResultUnavailable
+			}
+			return createLeaseRPCResponse(lease), nil
+		}
+		if err := s.scheduler.RequireAdmission(); err != nil {
+			return CreateLeaseRPCResponse{}, err
+		}
+		lease, replay, err = s.journal.CreateLease(ctx, createParams)
 		if err != nil {
 			return CreateLeaseRPCResponse{}, err
 		}
@@ -213,35 +228,49 @@ func (s *JournalRPCService) Activate(
 	leaseID string,
 	input ActivateRPCRequest,
 ) error {
-	if _, err := s.leaseForPeer(ctx, peer, leaseID); err != nil {
+	s.activateMu.Lock()
+	defer s.activateMu.Unlock()
+
+	current, err := s.leaseForPeer(ctx, peer, leaseID)
+	if err != nil {
 		return err
 	}
 	runID := input.AgentRunID
 	sessionID := input.SandboxSessionID
-	lease, replay, err := s.journal.Transition(ctx, TransitionParams{
+	params := TransitionParams{
 		LeaseID:          leaseID,
 		RequestID:        input.RequestID,
 		To:               LeaseActive,
 		At:               canonicalJournalTime(time.Now()),
 		AgentRunID:       &runID,
 		SandboxSessionID: &sessionID,
-	})
-	if err != nil {
-		return err
 	}
-	if replay {
-		if lease.State != LeaseActive {
+	if current.State == LeaseActive {
+		lease, replay, err := s.journal.Transition(ctx, params)
+		if err != nil {
+			return err
+		}
+		if !replay || lease.State != LeaseActive {
 			return ErrRPCReplayResultUnavailable
 		}
 		return s.scheduler.Activate(leaseID)
 	}
+	if current.State != LeaseReady {
+		return ErrInvalidTransition
+	}
 	if err := s.scheduler.Activate(leaseID); err != nil {
-		s.finishLease(
-			lease,
-			derivedRPCRequestID(input.RequestID, "activation-failed"),
-			TerminationActivationFailed,
-		)
 		return err
+	}
+	lease, replay, err := s.journal.Transition(ctx, params)
+	if err != nil {
+		rollbackErr := s.scheduler.RollbackActivation(leaseID)
+		return errors.Join(err, rollbackErr)
+	}
+	if replay {
+		if lease.State != LeaseActive {
+			_ = s.scheduler.RollbackActivation(leaseID)
+			return ErrRPCReplayResultUnavailable
+		}
 	}
 	return nil
 }

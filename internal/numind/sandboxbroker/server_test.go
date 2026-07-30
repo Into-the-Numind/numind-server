@@ -325,19 +325,41 @@ func TestJournalRPCServiceLifecycleAndMutationReplay(t *testing.T) {
 	if created.State != string(LeaseReady) || created.LeaseID == "" {
 		t.Fatalf("created = %#v", created)
 	}
+	scheduler.SetAdmission(false, ErrReadinessUnavailable)
 	replayed, err := service.CreateLease(ctx, peer, create)
 	if err != nil || replayed.LeaseID != created.LeaseID {
 		t.Fatalf("create replay = %#v err=%v", replayed, err)
 	}
+	scheduler.SetAdmission(true, nil)
 	runtime.assertCalls(t, "spawn", 1)
 
-	if err := service.Activate(ctx, peer, created.LeaseID, ActivateRPCRequest{
+	activate := ActivateRPCRequest{
 		RequestID:        "22222222-2222-4222-8222-222222222222",
 		AgentRunID:       7,
 		SandboxSessionID: 8,
-	}); err != nil {
+	}
+	scheduler.SetAdmission(false, ErrReadinessUnavailable)
+	if err := service.Activate(
+		ctx,
+		peer,
+		created.LeaseID,
+		activate,
+	); !errors.Is(err, ErrReadinessUnavailable) {
+		t.Fatalf("closed activation error=%v", err)
+	}
+	readyLease, err := journal.GetLease(ctx, created.LeaseID)
+	if err != nil || readyLease.State != LeaseReady {
+		t.Fatalf("blocked activation published journal state=%#v error=%v", readyLease, err)
+	}
+	scheduler.SetAdmission(true, nil)
+	if err := service.Activate(ctx, peer, created.LeaseID, activate); err != nil {
 		t.Fatal(err)
 	}
+	scheduler.SetAdmission(false, ErrReadinessUnavailable)
+	if err := service.Activate(ctx, peer, created.LeaseID, activate); err != nil {
+		t.Fatalf("active replay was blocked by admission: %v", err)
+	}
+	scheduler.SetAdmission(true, nil)
 	exec := ExecRPCRequest{
 		RequestID: "33333333-3333-4333-8333-333333333333",
 		Argv:      []string{"/bin/true"},
@@ -463,6 +485,15 @@ func TestJournalRPCServiceDoesNotSpawnWhileAdmissionIsClosed(
 		t.Fatalf("closed admission create error=%v", err)
 	}
 	runtime.assertCalls(t, "spawn", 0)
+	var count int
+	if err := journal.db.QueryRow(`SELECT COUNT(*) FROM lease`).Scan(
+		&count,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("closed admission grew journal by %d leases", count)
+	}
 }
 
 func waitForSocketPath(t *testing.T, path string) {

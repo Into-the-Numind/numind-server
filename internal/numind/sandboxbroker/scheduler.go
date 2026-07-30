@@ -177,6 +177,17 @@ func (s *Scheduler) AdmissionAllowed() bool {
 	return s.admissionAllowed
 }
 
+// RequireAdmission is the fail-fast check used before durable lease creation.
+// Acquire and Activate still recheck under the same scheduler lock.
+func (s *Scheduler) RequireAdmission() error {
+	if s == nil {
+		return ErrSchedulerAdmissionBlocked
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.admissionErrorLocked()
+}
+
 // Acquire reserves one global container slot in strict FIFO order.
 // A replay with the same immutable identity observes the first outcome and
 // never consumes another slot.
@@ -313,6 +324,9 @@ func (s *Scheduler) Activate(leaseID string) error {
 	case schedulerSlotActive:
 		return nil
 	case schedulerSlotReady:
+		if err := s.admissionErrorLocked(); err != nil {
+			return err
+		}
 		if s.active >= s.activeTaskMax {
 			return ErrSchedulerActiveLimit
 		}
@@ -322,6 +336,26 @@ func (s *Scheduler) Activate(leaseID string) error {
 	default:
 		return ErrInvalidSchedulerTransition
 	}
+}
+
+// RollbackActivation restores a ready slot when durable Active publication
+// fails after the scheduler atomically reserved the task slot.
+func (s *Scheduler) RollbackActivation(leaseID string) error {
+	if s == nil || !safeRuntimeToken(leaseID) {
+		return ErrSchedulerLeaseNotFound
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	slot, found := s.slots[leaseID]
+	if !found {
+		return ErrSchedulerLeaseNotFound
+	}
+	if slot.state != schedulerSlotActive {
+		return ErrInvalidSchedulerTransition
+	}
+	slot.state = schedulerSlotReady
+	s.active--
+	return nil
 }
 
 // Release frees capacity only after container destruction has completed.
@@ -463,6 +497,16 @@ func (s *Scheduler) grantFIFOHeadLocked() {
 		record.waiter.admissionDone = nil
 		close(record.waiter.done)
 	}
+}
+
+func (s *Scheduler) admissionErrorLocked() error {
+	if s.admissionAllowed {
+		return nil
+	}
+	if s.admissionErr != nil {
+		return s.admissionErr
+	}
+	return ErrSchedulerAdmissionBlocked
 }
 
 func (s *Scheduler) finishInvalidFIFOHeadLocked(

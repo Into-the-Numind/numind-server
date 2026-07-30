@@ -11,6 +11,8 @@ const (
 	PressureSampleInterval = 2 * time.Second
 	// PressureMaximumSampleGap is the largest gap that remains consecutive.
 	PressureMaximumSampleGap = 4 * time.Second
+	// PressureMinimumSampleGap tolerates early ticker jitter but rejects bursts.
+	PressureMinimumSampleGap = 3 * PressureSampleInterval / 4
 	// PressurePersistingGrace protects output upload before emergency recovery.
 	PressurePersistingGrace = 10 * time.Second
 	// PressureShedRetryInterval bounds repeated best-effort requests.
@@ -22,6 +24,7 @@ const (
 	HostEmergencyMemoryBytes int64 = gibibyte
 
 	pressureConsecutiveSamples = 3
+	pressureLeaseHistoryMax    = SchedulerMaxReplayRecords
 )
 
 var (
@@ -69,6 +72,15 @@ type PressureDecision struct {
 	AdmissionAllowed bool
 	Reason           PressureReason
 	ShedLeaseID      string
+	SamplingGap      bool
+}
+
+type pressureLeaseHistory struct {
+	StartedAt                 time.Time
+	FirstPersistingAt         time.Time
+	FirstPersistingReceivedAt time.Time
+	LastSeenAt                time.Time
+	LastState                 LeaseState
 }
 
 // PressureController applies the three-sample hysteresis under one lock.
@@ -89,7 +101,7 @@ type PressureController struct {
 	hostLowRuns      int
 	recoveryRuns     int
 	shedRequestedAt  map[string]time.Time
-	leaseLifecycles  map[string]PressureLease
+	leaseHistory     map[string]pressureLeaseHistory
 }
 
 // NewPressureController derives thresholds only from a sealed capacity plan.
@@ -124,15 +136,21 @@ func newPressureControllerWithClock(
 		now:              now,
 		reason:           PressureReasonSamplingGap,
 		shedRequestedAt:  make(map[string]time.Time),
-		leaseLifecycles:  make(map[string]PressureLease),
+		leaseHistory:     make(map[string]pressureLeaseHistory),
 	}, nil
 }
 
 // AdmissionAllowed fails closed if the trusted sampler has never reported or
 // has stopped reporting, even when no later Observe call arrives.
 func (c *PressureController) AdmissionAllowed() bool {
+	allowed, _ := c.AdmissionStatus()
+	return allowed
+}
+
+// AdmissionStatus returns the fresh gate and its bounded classification.
+func (c *PressureController) AdmissionStatus() (bool, PressureReason) {
 	if c == nil {
-		return false
+		return false, PressureReasonInvalidSample
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -143,7 +161,7 @@ func (c *PressureController) AdmissionAllowed() bool {
 		c.resetRunsLocked()
 		c.stopAdmissionLocked(PressureReasonSamplingGap)
 	}
-	return c.admissionAllowed
+	return c.admissionAllowed, c.reason
 }
 
 // Observe applies one consecutive pressure sample.
@@ -165,10 +183,6 @@ func (c *PressureController) Observe(
 		c.stopAdmissionLocked(PressureReasonInvalidSample)
 		return c.decisionLocked(""), ErrInvalidPressureSample
 	}
-	if err := c.validateLeaseContinuityLocked(sample); err != nil {
-		c.stopAdmissionLocked(PressureReasonInvalidSample)
-		return c.decisionLocked(""), err
-	}
 
 	sampleReceiptDelta := sample.ObservedAt.Sub(receivedAt)
 	gapDetected := sampleReceiptDelta > PressureMaximumSampleGap ||
@@ -178,9 +192,15 @@ func (c *PressureController) Observe(
 		receivedGap := receivedAt.Sub(c.lastReceivedAt)
 		gapDetected = gapDetected ||
 			observedGap <= 0 ||
+			observedGap < PressureMinimumSampleGap ||
 			observedGap > PressureMaximumSampleGap ||
 			receivedGap <= 0 ||
+			receivedGap < PressureMinimumSampleGap ||
 			receivedGap > PressureMaximumSampleGap
+	}
+	if err := c.validateLeaseContinuityLocked(sample, receivedAt); err != nil {
+		c.stopAdmissionLocked(PressureReasonInvalidSample)
+		return c.decisionLocked(""), err
 	}
 	c.lastObservedAt = sample.ObservedAt
 	c.lastReceivedAt = receivedAt
@@ -190,8 +210,11 @@ func (c *PressureController) Observe(
 		c.stopAdmissionLocked(PressureReasonSamplingGap)
 		if sample.HostMemAvailableBytes < HostEmergencyMemoryBytes {
 			c.reason = PressureReasonHostEmergency
-			return c.decisionLocked(c.selectShedLeaseLocked(sample)),
-				ErrPressureSamplingGap
+			decision := c.decisionLocked(
+				c.selectShedLeaseLocked(sample, receivedAt),
+			)
+			decision.SamplingGap = true
+			return decision, nil
 		}
 		return c.decisionLocked(""), ErrPressureSamplingGap
 	}
@@ -238,7 +261,7 @@ func (c *PressureController) Observe(
 
 	shedLeaseID := ""
 	if shouldShed {
-		shedLeaseID = c.selectShedLeaseLocked(sample)
+		shedLeaseID = c.selectShedLeaseLocked(sample, receivedAt)
 	}
 	return c.decisionLocked(shedLeaseID), nil
 }
@@ -284,28 +307,102 @@ func validatePressureSample(sample PressureSample) error {
 
 func (c *PressureController) validateLeaseContinuityLocked(
 	sample PressureSample,
+	receivedAt time.Time,
 ) error {
-	next := make(map[string]PressureLease, len(sample.Leases))
+	current := make(map[string]struct{}, len(sample.Leases))
+	updates := make(map[string]pressureLeaseHistory, len(sample.Leases))
+	newHistories := 0
 	for _, lease := range sample.Leases {
-		previous, seen := c.leaseLifecycles[lease.LeaseID]
+		current[lease.LeaseID] = struct{}{}
+		previous, seen := c.leaseHistory[lease.LeaseID]
 		if seen {
-			if !lease.StartedAt.Equal(previous.StartedAt) {
+			if !lease.StartedAt.Equal(previous.StartedAt) ||
+				pressureLeaseStateRank(lease.State) <
+					pressureLeaseStateRank(previous.LastState) {
 				return ErrInvalidPressureSample
 			}
-			if lease.State == LeaseOutputPersisting &&
-				previous.State == LeaseOutputPersisting &&
-				!lease.PersistingSince.Equal(previous.PersistingSince) {
-				return ErrInvalidPressureSample
+			if !previous.FirstPersistingAt.IsZero() {
+				switch lease.State {
+				case LeaseOutputPersisting:
+					if !lease.PersistingSince.Equal(
+						previous.FirstPersistingAt,
+					) {
+						return ErrInvalidPressureSample
+					}
+				case LeaseCreating, LeaseReady, LeaseActive:
+					return ErrInvalidPressureSample
+				}
 			}
+		} else {
+			newHistories++
 		}
-		next[lease.LeaseID] = lease
+
+		history := previous
+		history.StartedAt = lease.StartedAt
+		history.LastState = lease.State
+		history.LastSeenAt = receivedAt
+		if lease.State == LeaseOutputPersisting &&
+			history.FirstPersistingAt.IsZero() {
+			history.FirstPersistingAt = lease.PersistingSince
+			history.FirstPersistingReceivedAt = receivedAt
+		}
+		updates[lease.LeaseID] = history
 	}
-	c.leaseLifecycles = next
+	for len(c.leaseHistory)+newHistories > pressureLeaseHistoryMax {
+		if !c.evictOldestLeaseHistoryLocked(current) {
+			return ErrInvalidPressureSample
+		}
+	}
+	for leaseID, history := range updates {
+		c.leaseHistory[leaseID] = history
+	}
 	return nil
+}
+
+func (c *PressureController) evictOldestLeaseHistoryLocked(
+	current map[string]struct{},
+) bool {
+	oldestID := ""
+	var oldestAt time.Time
+	for leaseID, history := range c.leaseHistory {
+		if _, live := current[leaseID]; live {
+			continue
+		}
+		if oldestID == "" || history.LastSeenAt.Before(oldestAt) {
+			oldestID = leaseID
+			oldestAt = history.LastSeenAt
+		}
+	}
+	if oldestID != "" {
+		delete(c.leaseHistory, oldestID)
+		delete(c.shedRequestedAt, oldestID)
+		return true
+	}
+	return false
+}
+
+func pressureLeaseStateRank(state LeaseState) int {
+	switch state {
+	case LeaseCreating:
+		return 1
+	case LeaseReady:
+		return 2
+	case LeaseActive:
+		return 3
+	case LeaseOutputPersisting:
+		return 4
+	case LeaseDestroying, LeaseRecoveryPending:
+		return 5
+	case LeaseTerminated:
+		return 6
+	default:
+		return 0
+	}
 }
 
 func (c *PressureController) selectShedLeaseLocked(
 	sample PressureSample,
+	receivedAt time.Time,
 ) string {
 	live := make(map[string]struct{}, len(sample.Leases))
 	for _, lease := range sample.Leases {
@@ -324,14 +421,16 @@ func (c *PressureController) selectShedLeaseLocked(
 		case LeaseCreating, LeaseReady, LeaseActive:
 			eligible = true
 		case LeaseOutputPersisting:
-			eligible = sample.ObservedAt.Sub(lease.PersistingSince) >=
-				PressurePersistingGrace
+			history := c.leaseHistory[lease.LeaseID]
+			eligible = !history.FirstPersistingReceivedAt.IsZero() &&
+				receivedAt.Sub(history.FirstPersistingReceivedAt) >=
+					PressurePersistingGrace
 		}
 		if !eligible {
 			continue
 		}
 		if last, requested := c.shedRequestedAt[lease.LeaseID]; requested &&
-			sample.ObservedAt.Sub(last) < PressureShedRetryInterval {
+			receivedAt.Sub(last) < PressureShedRetryInterval {
 			continue
 		}
 		if candidate.LeaseID == "" ||
@@ -344,7 +443,7 @@ func (c *PressureController) selectShedLeaseLocked(
 	if candidate.LeaseID == "" {
 		return ""
 	}
-	c.shedRequestedAt[candidate.LeaseID] = sample.ObservedAt
+	c.shedRequestedAt[candidate.LeaseID] = receivedAt
 	return candidate.LeaseID
 }
 

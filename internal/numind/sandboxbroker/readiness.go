@@ -5,6 +5,7 @@ import (
 	"errors"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 const (
@@ -76,18 +77,21 @@ type ReadinessSource interface {
 }
 
 type readinessAdmissionGate interface {
-	AdmissionAllowed() bool
+	AdmissionStatus() (bool, PressureReason)
 }
 
 // ReadinessResult contains only bounded reason codes.
 type ReadinessResult struct {
-	Ready    bool
-	Alerts   []ReadinessCode
-	Failures []ReadinessCode
+	Ready          bool
+	PressureReason PressureReason
+	Alerts         []ReadinessCode
+	Failures       []ReadinessCode
 }
 
 // ReadinessChecker compares actual infrastructure with sealed expected values.
 type ReadinessChecker struct {
+	syncMu sync.Mutex
+
 	config            ReadinessConfig
 	source            ReadinessSource
 	pressure          readinessAdmissionGate
@@ -216,7 +220,9 @@ func (c *ReadinessChecker) Check(
 	if snapshot.ImageDigest != c.config.ImageDigest {
 		addReadinessCode(&result.Failures, ReadinessImageMismatch)
 	}
-	if !c.pressure.AdmissionAllowed() {
+	pressureAllowed, pressureReason := c.pressure.AdmissionStatus()
+	result.PressureReason = pressureReason
+	if !pressureAllowed {
 		addReadinessCode(&result.Failures, ReadinessPressureBlocked)
 	}
 	result.Ready = len(result.Failures) == 0
@@ -231,7 +237,8 @@ func (c *ReadinessChecker) RequireAdmission(ctx context.Context) error {
 	}
 	if !result.Ready {
 		if len(result.Failures) == 1 &&
-			result.Failures[0] == ReadinessPressureBlocked {
+			result.Failures[0] == ReadinessPressureBlocked &&
+			isCapacityPressureReason(result.PressureReason) {
 			return ErrSchedulerActiveLimit
 		}
 		return ErrReadinessUnavailable
@@ -245,9 +252,11 @@ func (c *ReadinessChecker) SyncAdmission(
 	ctx context.Context,
 	scheduler *Scheduler,
 ) error {
-	if scheduler == nil {
+	if c == nil || scheduler == nil {
 		return ErrInvalidReadinessConfig
 	}
+	c.syncMu.Lock()
+	defer c.syncMu.Unlock()
 	err := c.RequireAdmission(ctx)
 	if err != nil {
 		scheduler.SetAdmission(false, err)
@@ -255,6 +264,18 @@ func (c *ReadinessChecker) SyncAdmission(
 	}
 	scheduler.SetAdmission(true, nil)
 	return nil
+}
+
+func isCapacityPressureReason(reason PressureReason) bool {
+	switch reason {
+	case PressureReasonWorkloadHigh,
+		PressureReasonWorkloadShed,
+		PressureReasonHostLow,
+		PressureReasonHostEmergency:
+		return true
+	default:
+		return false
+	}
 }
 
 func validReadinessConfig(config ReadinessConfig) bool {

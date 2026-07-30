@@ -3,6 +3,8 @@ package sandboxbroker
 import (
 	"context"
 	"errors"
+	"net/http"
+	"sync"
 	"testing"
 	"time"
 )
@@ -288,11 +290,133 @@ func TestReadinessSynchronizesActualSchedulerGate(t *testing.T) {
 	if scheduler.AdmissionAllowed() {
 		t.Fatal("blocked checker left the actual scheduler gate open")
 	}
+	err = scheduler.Acquire(
+		context.Background(),
+		testSchedulerRequest(1, "api-blue"),
+	)
+	status, code := rpcErrorContract(err)
+	if !errors.Is(err, ErrSchedulerActiveLimit) ||
+		status != http.StatusTooManyRequests ||
+		code != "capacity" {
+		t.Fatalf("capacity error=%v contract=%d/%s", err, status, code)
+	}
+}
+
+func TestReadinessSamplingFailurePublishesUnavailableEndToEnd(
+	t *testing.T,
+) {
+	plan := readyCapacityPlanForRuntime(t)
+	at := time.Date(2026, 7, 30, 0, 0, 0, 0, time.UTC)
+	pressure, _ := newTestPressureController(t, plan, at)
+	config := testReadinessConfig()
+	checker, err := NewReadinessChecker(
+		config,
+		plan,
+		&fakeReadinessSource{
+			snapshot: validReadinessSnapshot(plan, config),
+		},
+		pressure,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scheduler := NewScheduler()
+	if err := checker.SyncAdmission(
+		context.Background(),
+		scheduler,
+	); !errors.Is(err, ErrReadinessUnavailable) {
+		t.Fatalf("startup sync error=%v", err)
+	}
+	err = scheduler.Acquire(
+		context.Background(),
+		testSchedulerRequest(0, "api-blue"),
+	)
+	if !errors.Is(err, ErrReadinessUnavailable) {
+		t.Fatalf("scheduler error=%v", err)
+	}
+	status, code := rpcErrorContract(err)
+	if status != http.StatusServiceUnavailable || code != "unavailable" {
+		t.Fatalf("error contract=%d/%s", status, code)
+	}
+}
+
+func TestReadinessSyncSerializesSnapshotPublication(t *testing.T) {
+	plan := readyCapacityPlanForRuntime(t)
+	pressure := readyPressureForReadinessTest(t, plan)
+	config := testReadinessConfig()
+	source := &orderedReadinessSource{
+		snapshot:      validReadinessSnapshot(plan, config),
+		firstStarted:  make(chan struct{}),
+		releaseFirst:  make(chan struct{}),
+		secondStarted: make(chan struct{}),
+	}
+	checker, err := NewReadinessChecker(config, plan, source, pressure)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scheduler := NewScheduler()
+	firstDone := make(chan error, 1)
+	secondDone := make(chan error, 1)
+	go func() {
+		firstDone <- checker.SyncAdmission(context.Background(), scheduler)
+	}()
+	<-source.firstStarted
+	go func() {
+		secondDone <- checker.SyncAdmission(context.Background(), scheduler)
+	}()
+	select {
+	case <-source.secondStarted:
+		t.Fatal("second readiness snapshot overtook the first publication")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(source.releaseFirst)
+	if err := <-firstDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-secondDone; !errors.Is(err, source.secondErr) {
+		t.Fatalf("second sync error=%v", err)
+	}
+	if scheduler.AdmissionAllowed() {
+		t.Fatal("older healthy result reopened scheduler after newer failure")
+	}
 }
 
 type fakeReadinessSource struct {
 	snapshot ReadinessSnapshot
 	err      error
+}
+
+type orderedReadinessSource struct {
+	mu            sync.Mutex
+	calls         int
+	snapshot      ReadinessSnapshot
+	firstStarted  chan struct{}
+	releaseFirst  chan struct{}
+	secondStarted chan struct{}
+	secondErr     error
+}
+
+func (s *orderedReadinessSource) Snapshot(
+	context.Context,
+) (ReadinessSnapshot, error) {
+	s.mu.Lock()
+	s.calls++
+	call := s.calls
+	if s.secondErr == nil {
+		s.secondErr = errors.New("newer readiness failure")
+	}
+	s.mu.Unlock()
+	switch call {
+	case 1:
+		close(s.firstStarted)
+		<-s.releaseFirst
+		return s.snapshot, nil
+	case 2:
+		close(s.secondStarted)
+		return ReadinessSnapshot{}, s.secondErr
+	default:
+		return ReadinessSnapshot{}, errors.New("unexpected readiness call")
+	}
 }
 
 func (s *fakeReadinessSource) Snapshot(

@@ -376,6 +376,50 @@ INSERT INTO lease (
 	return lease, false, err
 }
 
+// LookupCreateReplay checks only existing idempotency state and never writes.
+// It lets a closed admission gate reject new work before growing the journal.
+func (j *Journal) LookupCreateReplay(
+	ctx context.Context,
+	params CreateLeaseParams,
+) (Lease, bool, error) {
+	if params.CreatedAt.IsZero() {
+		params.CreatedAt = canonicalJournalTime(time.Now())
+	} else {
+		params.CreatedAt = canonicalJournalTime(params.CreatedAt)
+	}
+	params.ExpiresAt = canonicalJournalTime(params.ExpiresAt)
+	if err := validateCreateLeaseParams(params); err != nil {
+		return Lease{}, false, err
+	}
+
+	j.mu.RLock()
+	defer j.mu.RUnlock()
+	if j.closed {
+		return Lease{}, false, ErrJournalClosed
+	}
+	tx, err := j.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Lease{}, false, fmt.Errorf("begin create replay lookup: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	event, found, err := eventByRequestTx(ctx, tx, params.RequestID)
+	if err != nil || !found {
+		return Lease{}, false, err
+	}
+	lease, err := leaseByIDTx(ctx, tx, event.LeaseID)
+	if err != nil {
+		return Lease{}, false, err
+	}
+	if event.EventType != "create" ||
+		event.StateTo != LeaseQueued ||
+		event.RequestHash != createLeaseFingerprint(params) ||
+		!sameCreateIdentity(lease, params) {
+		return Lease{}, false, ErrIdempotencyConflict
+	}
+	return lease, true, nil
+}
+
 // Transition applies one legal lifecycle transition or replays an earlier request.
 func (j *Journal) Transition(ctx context.Context, params TransitionParams) (Lease, bool, error) {
 	if params.At.IsZero() {
