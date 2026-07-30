@@ -39,8 +39,10 @@ FROM ubuntu:22.04
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=Asia/Shanghai
 
-# 构建机在国内，Ubuntu 官方源偶发非常慢；默认走国内镜像，仍允许 build-arg 覆盖。
-ARG UBUNTU_MIRROR=https://mirrors.aliyun.com/ubuntu
+# Ubuntu 22.04 基础镜像默认还没有 ca-certificates，第一次 apt update
+# 不能依赖 HTTPS 源；APT 仍会校验仓库签名。这里默认走国内 HTTP 镜像，
+# 仍允许 build-arg 覆盖。
+ARG UBUNTU_MIRROR=http://mirrors.aliyun.com/ubuntu
 RUN if [ -n "$UBUNTU_MIRROR" ]; then \
       for source_file in /etc/apt/sources.list /etc/apt/sources.list.d/*.sources; do \
         [ -f "$source_file" ] || continue; \
