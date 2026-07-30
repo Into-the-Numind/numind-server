@@ -173,6 +173,9 @@ func (s *JournalRPCService) SandboxMetrics(
 		snapshot.CopyInBytes += lease.CopyInBytes
 		snapshot.CopyOutBytes += lease.CopyOutBytes
 	}
+	if s.telemetry != nil {
+		s.telemetry.apply(&snapshot)
+	}
 	return snapshot, nil
 }
 

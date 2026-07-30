@@ -4,8 +4,8 @@ features:
   ndf_version: '3.0'
   description: Run the Dev-proven Sandbox feature on the existing Prod host while isolating its Docker control plane, networks, secrets, mounts, and resource budget from customer-facing services and data.
   classification_reason: 'Standard: production host container-control security, a separate Sandbox runtime, build/deploy scripts, resource policy, and rollback verification span more than three files and are high risk.'
-  last_updated_by: ai-s4-batch1-verified
-  last_updated_at: '2026-07-30T13:58:00+0800'
+  last_updated_by: ai-s4-t10-sandboxd
+  last_updated_at: '2026-07-30T14:47:17+0800'
   created_at: '2026-07-30T01:26:00+0800'
   track: standard
   stage: S4
@@ -13,7 +13,7 @@ features:
   repos: [numind-server]
   branches: {numind-server: feature/prod-sandbox-isolation}
   worktrees: {numind-server: /private/tmp/wt-prod-sandbox-isolation-numind-server}
-  progress: {total_tasks: 18, completed_tasks: 10, reviewed_tasks: 9, current_task: 'T10 numind-sandboxd process and drain'}
+  progress: {total_tasks: 18, completed_tasks: 11, reviewed_tasks: 9, current_task: 'T12 user API broker wiring and soft fallback'}
   artifacts:
     requirement: requirements/prod-sandbox-isolation.md
     proposal: proposals/prod-sandbox-isolation-proposal.md
@@ -27,6 +27,7 @@ features:
     t6_prod_capacity: .ndf/decisions/prod-sandbox-isolation/0006-t6-prod-capacity.md
     t7_pressure_readiness: .ndf/decisions/prod-sandbox-isolation/0007-t7-pressure-readiness.md
     t8_t9_t11_batch1: .ndf/decisions/prod-sandbox-isolation/0008-t8-t9-t11-batch1-verification.md
+    t10_sandboxd_process: .ndf/decisions/prod-sandbox-isolation/0009-t10-sandboxd-process.md
     office_hours_design: /Users/zhiyuchen/.gstack/projects/Into-the-Numind-numind-server/zhiyuchen-feature-prod-sandbox-isolation-design-20260730-023436.md
   decisions:
   - 'Use the existing Prod cloud server rather than adding a separate cloud server.'
@@ -69,6 +70,7 @@ features:
   - 'T7 review: final independent specification and quality reviews PASS 0 P0/0 P1/0 P2 at commit 820341e5. Full sandboxbroker race tests and package/repository go vet pass; task lint stopped only when golangci-lint installation timed out against proxy.golang.org. Prod/config_prod/databases remain untouched.'
   - 'T8/T9/T11 batch: recovery, health/ready/metrics/audit, and the independent dry-run-by-default reconcile command are implemented. T11 uses a small Unix-socket-only recovery endpoint instead of reading the broker SQLite file, touches only broker-reported pending rows, refunds reservations through the existing credit service, and marks broker leases complete only after app DB cleanup succeeds.'
   - 'T8/T9/T11 review: quick quality review PASS, initial spec recheck found 5 P1 that were fixed, final reviewer recheck PASS. Focused race tests, go test ./..., and task lint all passed; task lint required GOPROXY=https://goproxy.cn,direct and PATH including GOPATH/bin after proxy.golang.org/PATH issues.'
+  - 'T10: numind-sandboxd composition root, fixed Docker runtime adapter, Linux pressure/readiness probes, sampling watchdog, and 300-second shutdown drain are implemented. config_prod.yaml is rejected by the daemon, Prod data/server were untouched, focused race tests, Linux compile checks, go test ./..., and task lint all passed.'
   blockers: []
 - id: xhs-analytics-summary-tests
   ndf_version: '3.0'

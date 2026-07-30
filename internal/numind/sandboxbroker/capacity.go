@@ -101,11 +101,62 @@ type capacityPlanSeal struct {
 	parentHeadroomBytes   int64
 }
 
+// StaticCapacityPlanConfig is the already-reviewed production capacity plan
+// read by sandboxd from its own non-business config at startup.
+type StaticCapacityPlanConfig struct {
+	EvidenceMode          CapacityEvidenceMode
+	BaselineBytes         int64
+	ParentMaxBytes        int64
+	WorkloadMaxBytes      int64
+	WorkloadHighBytes     int64
+	WorkloadRecoveryBytes int64
+	WorkloadShedBytes     int64
+	ControlHighBytes      int64
+	ControlMaxBytes       int64
+	ParentHeadroomBytes   int64
+}
+
 // CalculateSandboxCapacity validates evidence and derives all production
 // ceilings. It returns the calculated values with ErrCapacityInsufficient so a
 // release report can explain a low-capacity block without enabling traffic.
 func CalculateSandboxCapacity(evidence CapacityEvidence) (CapacityPlan, error) {
 	return calculateSandboxCapacityAt(evidence, time.Now().UTC())
+}
+
+// NewStaticCapacityPlan seals a production capacity plan without re-reading
+// business traffic or product secrets inside sandboxd.
+func NewStaticCapacityPlan(config StaticCapacityPlanConfig) (CapacityPlan, error) {
+	if _, ok := capacityMinimumDuration(config.EvidenceMode); !ok {
+		return CapacityPlan{}, ErrCapacityEvidenceInvalid
+	}
+	plan := CapacityPlan{
+		EvidenceMode:          config.EvidenceMode,
+		BaselineBytes:         config.BaselineBytes,
+		ParentMaxBytes:        config.ParentMaxBytes,
+		WorkloadMaxBytes:      config.WorkloadMaxBytes,
+		WorkloadHighBytes:     config.WorkloadHighBytes,
+		WorkloadRecoveryBytes: config.WorkloadRecoveryBytes,
+		WorkloadShedBytes:     config.WorkloadShedBytes,
+		ControlHighBytes:      config.ControlHighBytes,
+		ControlMaxBytes:       config.ControlMaxBytes,
+		ParentHeadroomBytes:   config.ParentHeadroomBytes,
+		ready:                 true,
+		seal: capacityPlanSeal{
+			baselineBytes:         config.BaselineBytes,
+			parentMaxBytes:        config.ParentMaxBytes,
+			workloadMaxBytes:      config.WorkloadMaxBytes,
+			workloadHighBytes:     config.WorkloadHighBytes,
+			workloadRecoveryBytes: config.WorkloadRecoveryBytes,
+			workloadShedBytes:     config.WorkloadShedBytes,
+			controlHighBytes:      config.ControlHighBytes,
+			controlMaxBytes:       config.ControlMaxBytes,
+			parentHeadroomBytes:   config.ParentHeadroomBytes,
+		},
+	}
+	if !validReadyCapacityPlan(plan) {
+		return CapacityPlan{}, ErrCapacityInsufficient
+	}
+	return plan, nil
 }
 
 func calculateSandboxCapacityAt(

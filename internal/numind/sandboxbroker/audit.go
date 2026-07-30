@@ -45,6 +45,15 @@ func logSandboxAudit(message string, event AuditEvent) {
 	)
 }
 
+// LogSandboxShutdownDrainDeadline records a bounded shutdown event without
+// customer content or host paths.
+func LogSandboxShutdownDrainDeadline() {
+	logSandboxAudit("sandbox shutdown drain deadline", AuditEvent{
+		TerminationReason: TerminationBrokerShutdown,
+		PressureState:     string(PressureReasonSamplingGap),
+	})
+}
+
 // SanitizeAuditEvent returns a copy safe for structured logs.
 func SanitizeAuditEvent(event AuditEvent) AuditEvent {
 	clean := event

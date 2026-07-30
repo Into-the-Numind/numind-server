@@ -103,6 +103,7 @@ type JournalRPCService struct {
 	journal         *Journal
 	scheduler       *Scheduler
 	runtime         ContainerRuntime
+	telemetry       *RuntimeTelemetry
 	creates         singleflight.Group
 	activationLocks activationLockSet
 }
