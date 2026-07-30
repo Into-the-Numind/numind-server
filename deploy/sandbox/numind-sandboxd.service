@@ -1,0 +1,32 @@
+[Unit]
+Description=Numind sandboxd constrained broker
+Documentation=internal Numind prod sandbox isolation
+Requires=numind-sandbox-data-root.mount
+After=numind-sandbox-data-root.mount network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=numind-sandbox
+Group=numind-sandbox
+SupplementaryGroups=numind-sandbox-api
+EnvironmentFile=/etc/numind-sandbox/sandboxd.env
+ExecStart=/opt/numind-sandbox/bin/numind-sandboxd -config /etc/numind-sandbox/sandboxd.yaml
+Restart=always
+RestartSec=5s
+TimeoutStopSec=320s
+Slice=numind-sandbox-control.slice
+UMask=0007
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/opt/numind-sandbox /run/numind-sandbox
+RuntimeDirectory=numind-sandbox
+RuntimeDirectoryMode=2770
+RestrictSUIDSGID=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target

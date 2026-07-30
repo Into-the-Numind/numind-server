@@ -1,0 +1,13 @@
+[Unit]
+Description=Numind Sandbox dedicated 8GiB Docker data-root image
+Documentation=internal Numind prod sandbox isolation
+Before=local-fs.target
+
+[Mount]
+What=/opt/numind-sandbox/data-root.img
+Where=/opt/numind-sandbox/data-root
+Type=ext4
+Options=loop,nosuid,nodev,noexec
+
+[Install]
+WantedBy=local-fs.target
