@@ -304,6 +304,7 @@ func TestServerListenAndServeUsesUnixAndAuthenticatedConnectionContext(t *testin
 func TestJournalRPCServiceLifecycleAndMutationReplay(t *testing.T) {
 	journal := openTestJournal(t, testJournalPath(t))
 	scheduler := NewScheduler()
+	scheduler.SetAdmission(true, nil)
 	runtime := &testContainerRuntime{}
 	service, err := NewJournalRPCService(journal, scheduler, runtime)
 	if err != nil {
@@ -437,6 +438,31 @@ func TestJournalRPCServiceLifecycleAndMutationReplay(t *testing.T) {
 	}
 	runtime.assertCalls(t, "delete", 1)
 	assertSchedulerCounts(t, scheduler, 0, 0, 0)
+}
+
+func TestJournalRPCServiceDoesNotSpawnWhileAdmissionIsClosed(
+	t *testing.T,
+) {
+	journal := openTestJournal(t, testJournalPath(t))
+	scheduler := NewScheduler()
+	runtime := &testContainerRuntime{}
+	service, err := NewJournalRPCService(journal, scheduler, runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = service.CreateLease(
+		context.Background(),
+		PeerCredentials{PID: 1, UID: 1000, GID: 1000},
+		CreateLeaseRPCRequest{
+			RequestID:   "11111111-1111-4111-8111-111111111111",
+			OwnerID:     "api-blue",
+			OwnerBootID: "boot-1",
+		},
+	)
+	if !errors.Is(err, ErrSchedulerAdmissionBlocked) {
+		t.Fatalf("closed admission create error=%v", err)
+	}
+	runtime.assertCalls(t, "spawn", 0)
 }
 
 func waitForSocketPath(t *testing.T, path string) {

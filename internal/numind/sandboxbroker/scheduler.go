@@ -41,6 +41,8 @@ var (
 	ErrInvalidSchedulerTransition = errors.New("invalid sandbox scheduler transition")
 	// ErrSchedulerActiveLimit means all global active-task slots are occupied.
 	ErrSchedulerActiveLimit = errors.New("sandbox scheduler active-task limit reached")
+	// ErrSchedulerAdmissionBlocked means the production gate is not initialized.
+	ErrSchedulerAdmissionBlocked = errors.New("sandbox scheduler admission blocked")
 )
 
 // SchedulerRequest is the immutable identity of one journal-backed admission.
@@ -99,6 +101,8 @@ type Scheduler struct {
 	totalContainerMax int
 	activeTaskMax     int
 	queueWaitTimeout  time.Duration
+	admissionAllowed  bool
+	admissionErr      error
 
 	slots         map[string]*schedulerSlot
 	requests      map[string]*schedulerRequestRecord
@@ -110,11 +114,14 @@ type Scheduler struct {
 
 // NewScheduler returns the fixed production five-container/five-task scheduler.
 func NewScheduler() *Scheduler {
-	return newScheduler(
+	scheduler := newScheduler(
 		SchedulerTotalContainerMax,
 		SchedulerActiveTaskMax,
 		SchedulerQueueWaitTimeout,
 	)
+	scheduler.admissionAllowed = false
+	scheduler.admissionErr = ErrSchedulerAdmissionBlocked
+	return scheduler
 }
 
 func newScheduler(
@@ -131,11 +138,43 @@ func newScheduler(
 		totalContainerMax: totalContainerMax,
 		activeTaskMax:     activeTaskMax,
 		queueWaitTimeout:  queueWaitTimeout,
+		admissionAllowed:  true,
 		slots:             make(map[string]*schedulerSlot, totalContainerMax),
 		requests:          make(map[string]*schedulerRequestRecord),
 		leaseRequests:     make(map[string]string),
 		finished:          list.New(),
 	}
+}
+
+// SetAdmission atomically updates the gate used at the exact FIFO slot grant.
+// Closing the gate leaves existing work untouched and prevents queued work
+// from being admitted. Reopening immediately re-evaluates the FIFO head.
+func (s *Scheduler) SetAdmission(allowed bool, cause error) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.admissionAllowed = allowed
+	if allowed {
+		s.admissionErr = nil
+		s.grantFIFOHeadLocked()
+		return
+	}
+	if cause == nil {
+		cause = ErrSchedulerAdmissionBlocked
+	}
+	s.admissionErr = cause
+}
+
+// AdmissionAllowed reports only the scheduler-owned, atomically enforced gate.
+func (s *Scheduler) AdmissionAllowed() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.admissionAllowed
 }
 
 // Acquire reserves one global container slot in strict FIFO order.
@@ -174,6 +213,14 @@ func (s *Scheduler) Acquire(
 			return outcome
 		}
 	} else {
+		if !s.admissionAllowed {
+			outcome := s.admissionErr
+			if outcome == nil {
+				outcome = ErrSchedulerAdmissionBlocked
+			}
+			s.mu.Unlock()
+			return outcome
+		}
 		if len(s.queue) >= SchedulerMaxQueued {
 			s.mu.Unlock()
 			return ErrSchedulerQueueFull
@@ -380,7 +427,8 @@ func (s *Scheduler) waitingOutcome(record *schedulerRequestRecord) error {
 }
 
 func (s *Scheduler) grantFIFOHeadLocked() {
-	for len(s.queue) > 0 &&
+	for s.admissionAllowed &&
+		len(s.queue) > 0 &&
 		len(s.slots) < s.totalContainerMax &&
 		s.active < s.activeTaskMax {
 		record := s.queue[0]

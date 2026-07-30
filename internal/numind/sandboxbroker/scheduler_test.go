@@ -310,6 +310,7 @@ func TestSchedulerConcurrentAcquireNeverExceedsLimit(t *testing.T) {
 
 func TestSchedulerRejectsUnsafeTransitionsAndIdentity(t *testing.T) {
 	scheduler := NewScheduler()
+	scheduler.SetAdmission(true, nil)
 	if err := scheduler.Acquire(context.Background(), SchedulerRequest{}); !errors.Is(
 		err,
 		ErrInvalidSchedulerRequest,
@@ -347,6 +348,43 @@ func TestSchedulerRejectsUnsafeTransitionsAndIdentity(t *testing.T) {
 	if err := scheduler.Release(request.LeaseID); err != nil {
 		t.Fatalf("release replay error = %v", err)
 	}
+}
+
+func TestSchedulerProductionStartsClosedAndRechecksQueuedHead(
+	t *testing.T,
+) {
+	production := NewScheduler()
+	request := testSchedulerRequest(0, "owner-blue")
+	if err := production.Acquire(
+		context.Background(),
+		request,
+	); !errors.Is(err, ErrSchedulerAdmissionBlocked) {
+		t.Fatalf("production startup admission error=%v", err)
+	}
+
+	scheduler := newScheduler(1, 1, time.Second)
+	if err := scheduler.Acquire(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	queued := testSchedulerRequest(1, "owner-green")
+	done := make(chan error, 1)
+	go func() {
+		done <- scheduler.Acquire(context.Background(), queued)
+	}()
+	waitForSchedulerQueue(t, scheduler, []string{queued.RequestID})
+
+	scheduler.SetAdmission(false, ErrReadinessUnavailable)
+	if err := scheduler.Release(request.LeaseID); err != nil {
+		t.Fatal(err)
+	}
+	assertSchedulerBlocked(t, done)
+	assertSchedulerCounts(t, scheduler, 0, 0, 1)
+
+	scheduler.SetAdmission(true, nil)
+	if err := receiveSchedulerResult(t, done); err != nil {
+		t.Fatal(err)
+	}
+	assertSchedulerCounts(t, scheduler, 1, 0, 0)
 }
 
 func testSchedulerRequest(index int, owner string) SchedulerRequest {

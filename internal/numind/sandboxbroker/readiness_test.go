@@ -11,10 +11,7 @@ func TestReadinessRequiresExactInfrastructureAndReportsDiskWarning(
 	t *testing.T,
 ) {
 	plan := readyCapacityPlanForRuntime(t)
-	pressure, err := NewPressureController(plan)
-	if err != nil {
-		t.Fatal(err)
-	}
+	pressure := readyPressureForReadinessTest(t, plan)
 	config := testReadinessConfig()
 	source := &fakeReadinessSource{
 		snapshot: validReadinessSnapshot(plan, config),
@@ -132,10 +129,7 @@ func TestReadinessFailsClosedForEveryInfrastructureDependency(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			pressure, err := NewPressureController(plan)
-			if err != nil {
-				t.Fatal(err)
-			}
+			pressure := readyPressureForReadinessTest(t, plan)
 			snapshot := validReadinessSnapshot(plan, config)
 			tt.mutate(&snapshot)
 			checker, err := NewReadinessChecker(
@@ -158,21 +152,19 @@ func TestReadinessFailsClosedForEveryInfrastructureDependency(t *testing.T) {
 
 func TestReadinessIncludesPressureAdmissionAndSourceFailure(t *testing.T) {
 	plan := readyCapacityPlanForRuntime(t)
-	pressure, err := NewPressureController(plan)
-	if err != nil {
-		t.Fatal(err)
-	}
-	start := time.Date(2026, 7, 30, 0, 0, 0, 0, time.UTC)
+	pressure, clock, next := readyPressureControllerForTest(
+		t,
+		plan,
+		time.Date(2026, 7, 30, 0, 0, 0, 0, time.UTC),
+	)
 	for index := 0; index < 3; index++ {
-		if _, err := pressure.Observe(PressureSample{
-			ObservedAt: start.Add(
+		observePressureAt(t, pressure, clock, PressureSample{
+			ObservedAt: next.Add(
 				time.Duration(index) * PressureSampleInterval,
 			),
 			WorkloadMemoryBytes:   plan.WorkloadHighBytes,
 			HostMemAvailableBytes: 2 * gibibyte,
-		}); err != nil {
-			t.Fatal(err)
-		}
+		})
 	}
 	config := testReadinessConfig()
 	source := &fakeReadinessSource{
@@ -206,14 +198,20 @@ func TestReadinessIncludesPressureAdmissionAndSourceFailure(t *testing.T) {
 	) {
 		t.Fatalf("admission source error=%v", err)
 	}
+
+	source.err = nil
+	source.snapshot.RuntimeReady = false
+	if err := checker.RequireAdmission(context.Background()); !errors.Is(
+		err,
+		ErrReadinessUnavailable,
+	) {
+		t.Fatalf("infrastructure admission error=%v", err)
+	}
 }
 
 func TestReadinessRejectsUnsafeConfigAndBlockedCapacity(t *testing.T) {
 	plan := readyCapacityPlanForRuntime(t)
-	pressure, err := NewPressureController(plan)
-	if err != nil {
-		t.Fatal(err)
-	}
+	pressure := readyPressureForReadinessTest(t, plan)
 	config := testReadinessConfig()
 	config.DataRootPath = "relative"
 	if _, err := NewReadinessChecker(
@@ -223,6 +221,72 @@ func TestReadinessRejectsUnsafeConfigAndBlockedCapacity(t *testing.T) {
 		pressure,
 	); !errors.Is(err, ErrInvalidReadinessConfig) {
 		t.Fatalf("unsafe path error=%v", err)
+	}
+
+	for _, workloadPath := range []string{
+		"/sys/fs/cgroup/user.slice/other.slice",
+		"/sys/fs/cgroup/user.slice",
+		"/sys/fs/cgroup/user.slice/user-1001.slice-other",
+		config.ParentCgroupPath,
+	} {
+		t.Run(workloadPath, func(t *testing.T) {
+			invalid := testReadinessConfig()
+			invalid.WorkloadCgroupPath = workloadPath
+			if _, err := NewReadinessChecker(
+				invalid,
+				plan,
+				&fakeReadinessSource{},
+				pressure,
+			); !errors.Is(err, ErrInvalidReadinessConfig) {
+				t.Fatalf("workload path %q error=%v", workloadPath, err)
+			}
+		})
+	}
+}
+
+func TestReadinessSynchronizesActualSchedulerGate(t *testing.T) {
+	plan := readyCapacityPlanForRuntime(t)
+	pressure, clock, next := readyPressureControllerForTest(
+		t,
+		plan,
+		time.Date(2026, 7, 30, 0, 0, 0, 0, time.UTC),
+	)
+	config := testReadinessConfig()
+	source := &fakeReadinessSource{
+		snapshot: validReadinessSnapshot(plan, config),
+	}
+	checker, err := NewReadinessChecker(config, plan, source, pressure)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scheduler := NewScheduler()
+	if err := checker.SyncAdmission(
+		context.Background(),
+		scheduler,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if !scheduler.AdmissionAllowed() {
+		t.Fatal("ready checker did not open the actual scheduler gate")
+	}
+
+	for index := 0; index < pressureConsecutiveSamples; index++ {
+		observePressureAt(t, pressure, clock, PressureSample{
+			ObservedAt: next.Add(
+				time.Duration(index) * PressureSampleInterval,
+			),
+			WorkloadMemoryBytes:   plan.WorkloadHighBytes,
+			HostMemAvailableBytes: 2 * gibibyte,
+		})
+	}
+	if err := checker.SyncAdmission(
+		context.Background(),
+		scheduler,
+	); !errors.Is(err, ErrSchedulerActiveLimit) {
+		t.Fatalf("blocked sync error=%v", err)
+	}
+	if scheduler.AdmissionAllowed() {
+		t.Fatal("blocked checker left the actual scheduler gate open")
 	}
 }
 
@@ -294,4 +358,17 @@ func cloneBoolMap(source map[string]bool) map[string]bool {
 		cloned[key] = value
 	}
 	return cloned
+}
+
+func readyPressureForReadinessTest(
+	t *testing.T,
+	plan CapacityPlan,
+) *PressureController {
+	t.Helper()
+	controller, _, _ := readyPressureControllerForTest(
+		t,
+		plan,
+		time.Date(2026, 7, 30, 0, 0, 0, 0, time.UTC),
+	)
+	return controller
 }

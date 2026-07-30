@@ -6,88 +6,148 @@ import (
 	"time"
 )
 
+type pressureTestClock struct {
+	now time.Time
+}
+
+func (c *pressureTestClock) Now() time.Time {
+	return c.now
+}
+
+func TestPressureStartsClosedRequiresThreeSamplesAndHasWatchdog(
+	t *testing.T,
+) {
+	plan := readyCapacityPlanForRuntime(t)
+	start := time.Date(2026, 7, 30, 0, 0, 0, 0, time.UTC)
+	controller, clock := newTestPressureController(t, plan, start)
+	if controller.AdmissionAllowed() {
+		t.Fatal("controller admitted before the first trusted sample")
+	}
+
+	var decision PressureDecision
+	for index := 0; index < pressureConsecutiveSamples; index++ {
+		sample := healthyPressureSample(
+			plan,
+			start.Add(time.Duration(index)*PressureSampleInterval),
+		)
+		decision = observePressureAt(t, controller, clock, sample)
+		if index < pressureConsecutiveSamples-1 &&
+			decision.AdmissionAllowed {
+			t.Fatalf("controller admitted after only %d samples", index+1)
+		}
+	}
+	if !decision.AdmissionAllowed {
+		t.Fatalf("controller did not open after trusted recovery: %#v", decision)
+	}
+
+	clock.now = clock.now.Add(PressureMaximumSampleGap + time.Nanosecond)
+	if controller.AdmissionAllowed() {
+		t.Fatal("controller stayed open after the sampler stopped")
+	}
+}
+
+func TestPressureRejectsSampleTimestampOutsideTrustedReceiptWindow(
+	t *testing.T,
+) {
+	plan := readyCapacityPlanForRuntime(t)
+	start := time.Date(2026, 7, 30, 0, 0, 0, 0, time.UTC)
+	controller, clock := newTestPressureController(t, plan, start)
+	clock.now = start
+	decision, err := controller.Observe(healthyPressureSample(
+		plan,
+		start.Add(PressureMaximumSampleGap+time.Second),
+	))
+	if !errors.Is(err, ErrPressureSamplingGap) ||
+		decision.AdmissionAllowed {
+		t.Fatalf("future sample decision=%#v error=%v", decision, err)
+	}
+}
+
 func TestPressureStopsAfterThreeHighSamplesAndRecoversWithHysteresis(
 	t *testing.T,
 ) {
 	plan := readyCapacityPlanForRuntime(t)
-	controller, err := NewPressureController(plan)
-	if err != nil {
-		t.Fatal(err)
-	}
 	start := time.Date(2026, 7, 30, 0, 0, 0, 0, time.UTC)
-	for index := 0; index < 2; index++ {
-		decision, err := controller.Observe(PressureSample{
-			ObservedAt:            start.Add(time.Duration(index) * PressureSampleInterval),
+	controller, clock, next := readyPressureControllerForTest(
+		t,
+		plan,
+		start,
+	)
+
+	var decision PressureDecision
+	for index := 0; index < pressureConsecutiveSamples; index++ {
+		sample := PressureSample{
+			ObservedAt: next.Add(
+				time.Duration(index) * PressureSampleInterval,
+			),
 			WorkloadMemoryBytes:   plan.WorkloadHighBytes,
 			HostMemAvailableBytes: 2 * gibibyte,
-		})
-		if err != nil || !decision.AdmissionAllowed {
-			t.Fatalf("high sample %d decision=%#v error=%v", index, decision, err)
+		}
+		decision = observePressureAt(t, controller, clock, sample)
+		if index < pressureConsecutiveSamples-1 &&
+			!decision.AdmissionAllowed {
+			t.Fatalf("high sample %d stopped early: %#v", index, decision)
 		}
 	}
-	decision, err := controller.Observe(PressureSample{
-		ObservedAt:            start.Add(2 * PressureSampleInterval),
-		WorkloadMemoryBytes:   plan.WorkloadHighBytes,
-		HostMemAvailableBytes: 2 * gibibyte,
-	})
-	if err != nil || decision.AdmissionAllowed ||
+	if decision.AdmissionAllowed ||
 		decision.Reason != PressureReasonWorkloadHigh {
-		t.Fatalf("third high decision=%#v error=%v", decision, err)
+		t.Fatalf("third high decision=%#v", decision)
 	}
 
-	for index := 3; index < 5; index++ {
-		decision, err = controller.Observe(PressureSample{
-			ObservedAt:            start.Add(time.Duration(index) * PressureSampleInterval),
+	recoveryStart := next.Add(
+		pressureConsecutiveSamples * PressureSampleInterval,
+	)
+	for index := 0; index < pressureConsecutiveSamples; index++ {
+		sample := PressureSample{
+			ObservedAt: recoveryStart.Add(
+				time.Duration(index) * PressureSampleInterval,
+			),
 			WorkloadMemoryBytes:   plan.WorkloadRecoveryBytes - 1,
 			HostMemAvailableBytes: 2 * gibibyte,
-		})
-		if err != nil || decision.AdmissionAllowed {
-			t.Fatalf("recovery sample %d decision=%#v error=%v", index, decision, err)
+		}
+		decision = observePressureAt(t, controller, clock, sample)
+		if index < pressureConsecutiveSamples-1 &&
+			decision.AdmissionAllowed {
+			t.Fatalf("recovery sample %d opened early: %#v", index, decision)
 		}
 	}
-	decision, err = controller.Observe(PressureSample{
-		ObservedAt:            start.Add(5 * PressureSampleInterval),
-		WorkloadMemoryBytes:   plan.WorkloadRecoveryBytes - 1,
-		HostMemAvailableBytes: 2 * gibibyte,
-	})
-	if err != nil || !decision.AdmissionAllowed ||
+	if !decision.AdmissionAllowed ||
 		decision.Reason != PressureReasonRecovered {
-		t.Fatalf("third recovery decision=%#v error=%v", decision, err)
+		t.Fatalf("third recovery decision=%#v", decision)
 	}
 }
 
-func TestPressureHostThresholdAndEmergencyShedNewestEligible(t *testing.T) {
+func TestPressureEmergencyAfterGapStillShedsAndAllowsZeroMemory(
+	t *testing.T,
+) {
 	plan := readyCapacityPlanForRuntime(t)
-	controller, err := NewPressureController(plan)
-	if err != nil {
-		t.Fatal(err)
-	}
 	start := time.Date(2026, 7, 30, 0, 0, 0, 0, time.UTC)
-	leases := []PressureLease{
-		{
-			LeaseID:   "lease-old",
-			State:     LeaseActive,
-			StartedAt: start.Add(-time.Minute),
-		},
-		{
-			LeaseID:   "lease-new",
-			State:     LeaseActive,
-			StartedAt: start.Add(-time.Second),
-		},
-		{
-			LeaseID:         "lease-persisting",
-			State:           LeaseOutputPersisting,
-			StartedAt:       start.Add(-time.Minute),
-			PersistingSince: start.Add(-9 * time.Second),
-		},
-	}
+	controller, clock, next := readyPressureControllerForTest(
+		t,
+		plan,
+		start,
+	)
+	emergencyAt := next.Add(PressureMaximumSampleGap + time.Second)
+	clock.now = emergencyAt
 	decision, err := controller.Observe(PressureSample{
-		ObservedAt:            start,
+		ObservedAt:            emergencyAt,
 		WorkloadMemoryBytes:   plan.WorkloadRecoveryBytes,
-		HostMemAvailableBytes: HostEmergencyMemoryBytes - 1,
-		Leases:                leases,
+		HostMemAvailableBytes: 0,
+		Leases: []PressureLease{
+			{
+				LeaseID:   "lease-old",
+				State:     LeaseActive,
+				StartedAt: start.Add(-time.Minute),
+			},
+			{
+				LeaseID:   "lease-new",
+				State:     LeaseActive,
+				StartedAt: start.Add(-time.Second),
+			},
+		},
 	})
-	if err != nil || decision.AdmissionAllowed ||
+	if !errors.Is(err, ErrPressureSamplingGap) ||
+		decision.AdmissionAllowed ||
 		decision.Reason != PressureReasonHostEmergency ||
 		decision.ShedLeaseID != "lease-new" {
 		t.Fatalf("emergency decision=%#v error=%v", decision, err)
@@ -96,23 +156,21 @@ func TestPressureHostThresholdAndEmergencyShedNewestEligible(t *testing.T) {
 
 func TestPressureStopsAfterThreeHostLowSamples(t *testing.T) {
 	plan := readyCapacityPlanForRuntime(t)
-	controller, err := NewPressureController(plan)
-	if err != nil {
-		t.Fatal(err)
-	}
 	start := time.Date(2026, 7, 30, 0, 0, 0, 0, time.UTC)
+	controller, clock, next := readyPressureControllerForTest(
+		t,
+		plan,
+		start,
+	)
 	var decision PressureDecision
-	for index := 0; index < 3; index++ {
-		decision, err = controller.Observe(PressureSample{
-			ObservedAt: start.Add(
+	for index := 0; index < pressureConsecutiveSamples; index++ {
+		decision = observePressureAt(t, controller, clock, PressureSample{
+			ObservedAt: next.Add(
 				time.Duration(index) * PressureSampleInterval,
 			),
 			WorkloadMemoryBytes:   0,
 			HostMemAvailableBytes: HostAdmissionMemoryBytes - 1,
 		})
-		if err != nil {
-			t.Fatal(err)
-		}
 	}
 	if decision.AdmissionAllowed ||
 		decision.Reason != PressureReasonHostLow {
@@ -120,87 +178,83 @@ func TestPressureStopsAfterThreeHostLowSamples(t *testing.T) {
 	}
 }
 
-func TestPressureWorkloadShedProtectsPersistingForTenSeconds(t *testing.T) {
+func TestPressureWorkloadShedProtectsStablePersistingWindow(
+	t *testing.T,
+) {
 	plan := readyCapacityPlanForRuntime(t)
-	controller, err := NewPressureController(plan)
-	if err != nil {
-		t.Fatal(err)
-	}
 	start := time.Date(2026, 7, 30, 0, 0, 0, 0, time.UTC)
-	for index := 0; index < 3; index++ {
-		decision, observeErr := controller.Observe(PressureSample{
-			ObservedAt:            start.Add(time.Duration(index) * PressureSampleInterval),
+	controller, clock, next := readyPressureControllerForTest(
+		t,
+		plan,
+		start,
+	)
+	persistingSince := next.Add(-6 * time.Second)
+	lease := PressureLease{
+		LeaseID:         "lease-persisting",
+		State:           LeaseOutputPersisting,
+		StartedAt:       start.Add(-time.Minute),
+		PersistingSince: persistingSince,
+	}
+
+	var decision PressureDecision
+	for index := 0; index < pressureConsecutiveSamples; index++ {
+		decision = observePressureAt(t, controller, clock, PressureSample{
+			ObservedAt: next.Add(
+				time.Duration(index) * PressureSampleInterval,
+			),
 			WorkloadMemoryBytes:   plan.WorkloadShedBytes,
 			HostMemAvailableBytes: 2 * gibibyte,
-			Leases: []PressureLease{{
-				LeaseID:         "lease-persisting",
-				State:           LeaseOutputPersisting,
-				StartedAt:       start.Add(-time.Minute),
-				PersistingSince: start.Add(-4 * time.Second),
-			}},
+			Leases:                []PressureLease{lease},
 		})
-		if observeErr != nil {
-			t.Fatal(observeErr)
-		}
-		if index == 2 && decision.ShedLeaseID != "" {
-			t.Fatalf("persisting lease shed before grace: %#v", decision)
-		}
 	}
+	if decision.ShedLeaseID != "lease-persisting" {
+		t.Fatalf("expired persistence grace decision=%#v", decision)
+	}
+
+	shiftedAt := next.Add(3 * PressureSampleInterval)
+	lease.PersistingSince = shiftedAt
+	clock.now = shiftedAt
 	decision, err := controller.Observe(PressureSample{
-		ObservedAt:            start.Add(3 * PressureSampleInterval),
+		ObservedAt:            shiftedAt,
 		WorkloadMemoryBytes:   plan.WorkloadShedBytes,
 		HostMemAvailableBytes: 2 * gibibyte,
-		Leases: []PressureLease{{
-			LeaseID:         "lease-persisting",
-			State:           LeaseOutputPersisting,
-			StartedAt:       start.Add(-time.Minute),
-			PersistingSince: start.Add(-4 * time.Second),
-		}},
+		Leases:                []PressureLease{lease},
 	})
-	if err != nil || decision.ShedLeaseID != "lease-persisting" {
-		t.Fatalf("expired persistence grace decision=%#v error=%v", decision, err)
+	if !errors.Is(err, ErrInvalidPressureSample) ||
+		decision.AdmissionAllowed {
+		t.Fatalf("shifted lifecycle decision=%#v error=%v", decision, err)
 	}
 }
 
-func TestPressureSamplingGapFailsClosedThenRecovers(t *testing.T) {
+func TestPressureSamplingGapFailsClosedThenRecoversWithEarlyJitter(
+	t *testing.T,
+) {
 	plan := readyCapacityPlanForRuntime(t)
-	controller, err := NewPressureController(plan)
-	if err != nil {
-		t.Fatal(err)
-	}
 	start := time.Date(2026, 7, 30, 0, 0, 0, 0, time.UTC)
-	if _, err := controller.Observe(PressureSample{
-		ObservedAt:            start,
-		WorkloadMemoryBytes:   0,
-		HostMemAvailableBytes: 2 * gibibyte,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	decision, err := controller.Observe(PressureSample{
-		ObservedAt:            start.Add(PressureMaximumSampleGap + time.Second),
-		WorkloadMemoryBytes:   0,
-		HostMemAvailableBytes: 2 * gibibyte,
-	})
+	controller, clock, next := readyPressureControllerForTest(
+		t,
+		plan,
+		start,
+	)
+	gapAt := next.Add(PressureMaximumSampleGap + time.Second)
+	clock.now = gapAt
+	decision, err := controller.Observe(healthyPressureSample(plan, gapAt))
 	if !errors.Is(err, ErrPressureSamplingGap) ||
 		decision.AdmissionAllowed {
 		t.Fatalf("gap decision=%#v error=%v", decision, err)
 	}
-	for index := 1; index <= 3; index++ {
-		decision, err = controller.Observe(PressureSample{
-			ObservedAt: start.Add(
-				PressureMaximumSampleGap +
-					time.Second +
-					time.Duration(index)*PressureSampleInterval,
-			),
-			WorkloadMemoryBytes:   0,
-			HostMemAvailableBytes: 2 * gibibyte,
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
+
+	for index := 1; index <= pressureConsecutiveSamples; index++ {
+		at := gapAt.Add(time.Duration(index) * (PressureSampleInterval - 200*time.Millisecond))
+		decision = observePressureAt(
+			t,
+			controller,
+			clock,
+			healthyPressureSample(plan, at),
+		)
 	}
 	if !decision.AdmissionAllowed {
-		t.Fatalf("controller did not recover: %#v", decision)
+		t.Fatalf("controller did not recover after harmless jitter: %#v", decision)
 	}
 }
 
@@ -221,10 +275,9 @@ func TestPressureRejectsBlockedCapacityPlanAndInvalidSamples(t *testing.T) {
 		t.Fatalf("blocked plan error=%v", err)
 	}
 
-	controller, err := NewPressureController(readyCapacityPlanForRuntime(t))
-	if err != nil {
-		t.Fatal(err)
-	}
+	plan := readyCapacityPlanForRuntime(t)
+	controller, clock := newTestPressureController(t, plan, end)
+	clock.now = end
 	decision, err := controller.Observe(PressureSample{
 		ObservedAt:            end,
 		WorkloadMemoryBytes:   -1,
@@ -234,6 +287,65 @@ func TestPressureRejectsBlockedCapacityPlanAndInvalidSamples(t *testing.T) {
 		decision.AdmissionAllowed {
 		t.Fatalf("invalid sample decision=%#v error=%v", decision, err)
 	}
+}
+
+func newTestPressureController(
+	t *testing.T,
+	plan CapacityPlan,
+	at time.Time,
+) (*PressureController, *pressureTestClock) {
+	t.Helper()
+	clock := &pressureTestClock{now: at}
+	controller, err := newPressureControllerWithClock(plan, clock.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return controller, clock
+}
+
+func readyPressureControllerForTest(
+	t *testing.T,
+	plan CapacityPlan,
+	start time.Time,
+) (*PressureController, *pressureTestClock, time.Time) {
+	t.Helper()
+	controller, clock := newTestPressureController(t, plan, start)
+	for index := 0; index < pressureConsecutiveSamples; index++ {
+		observePressureAt(
+			t,
+			controller,
+			clock,
+			healthyPressureSample(
+				plan,
+				start.Add(time.Duration(index)*PressureSampleInterval),
+			),
+		)
+	}
+	next := start.Add(pressureConsecutiveSamples * PressureSampleInterval)
+	return controller, clock, next
+}
+
+func healthyPressureSample(plan CapacityPlan, at time.Time) PressureSample {
+	return PressureSample{
+		ObservedAt:            at,
+		WorkloadMemoryBytes:   plan.WorkloadRecoveryBytes - 1,
+		HostMemAvailableBytes: 2 * gibibyte,
+	}
+}
+
+func observePressureAt(
+	t *testing.T,
+	controller *PressureController,
+	clock *pressureTestClock,
+	sample PressureSample,
+) PressureDecision {
+	t.Helper()
+	clock.now = sample.ObservedAt
+	decision, err := controller.Observe(sample)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return decision
 }
 
 func readyCapacityPlanForRuntime(t *testing.T) CapacityPlan {

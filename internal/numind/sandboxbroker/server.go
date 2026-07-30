@@ -1617,6 +1617,9 @@ func rpcErrorContract(err error) (int, string) {
 		errors.Is(err, ErrSchedulerActiveLimit),
 		errors.Is(err, ErrCopyStreamLimit):
 		return http.StatusTooManyRequests, "capacity"
+	case errors.Is(err, ErrSchedulerAdmissionBlocked),
+		errors.Is(err, ErrReadinessUnavailable):
+		return http.StatusServiceUnavailable, "unavailable"
 	case errors.Is(err, ErrLeaseNotFound),
 		errors.Is(err, ErrSchedulerLeaseNotFound):
 		return http.StatusNotFound, "not_found"

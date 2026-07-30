@@ -217,6 +217,10 @@ T1..T17 ───────────────────────> T
 - 新增 `internal/numind/sandboxbroker/pressure_test.go`
 - 新增 `internal/numind/sandboxbroker/readiness.go`
 - 新增 `internal/numind/sandboxbroker/readiness_test.go`
+- 修改 `internal/numind/sandboxbroker/scheduler.go`
+- 修改 `internal/numind/sandboxbroker/scheduler_test.go`
+- 修改 `internal/numind/sandboxbroker/server.go`
+- 修改 `internal/numind/sandboxbroker/server_test.go`
 
 **实现**
 
@@ -226,6 +230,9 @@ T1..T17 ───────────────────────> T
 - cgroup v2/controller/cgroup parent、data-root mount+UUID、disk bytes/inodes、
   image digest readiness。
 - 70%告警，85%停准入；mount失败不退化根盘。
+- scheduler生产启动默认关闭；只有新鲜且完整的pressure/readiness结果才能打开。
+- 准入状态在FIFO真正获得slot时原子重检；已排队任务在门关闭后不得spawn，
+  恢复后重新检查再按原顺序放行。
 
 **RED/验收**
 
@@ -289,6 +296,10 @@ T1..T17 ───────────────────────> T
 - 新增 `cmd/numind-sandboxd/main_test.go`
 - 新增 `internal/numind/sandboxbroker/runtime_adapter.go`
 - 新增 `internal/numind/sandboxbroker/runtime_adapter_test.go`
+- 新增 `internal/numind/sandboxbroker/pressure_runner_linux.go`
+- 新增 `internal/numind/sandboxbroker/pressure_runner_linux_test.go`
+- 新增 `internal/numind/sandboxbroker/readiness_linux.go`
+- 新增 `internal/numind/sandboxbroker/readiness_linux_test.go`
 
 **实现**
 
@@ -296,6 +307,11 @@ T1..T17 ───────────────────────> T
   `RuntimePolicy` 已校验的 spawn/exec/copy/mkdir/inspect/delete 模板，不新增
   RPC 可控 Docker 参数。
 - 读取独立非业务配置，初始化journal/runtime adapter/scheduler/recovery/server。
+- 以可信时钟每2秒读取`/proc/meminfo`、cgroup v2
+  `memory.current/memory.max/cgroup.controllers`、data-root挂载点/UUID、
+  `statfs`字节与inode、固定镜像digest；先更新pressure/readiness，再通过
+  `ReadinessChecker.SyncAdmission`同步实际scheduler准入门。独立watchdog在采样
+  ticker停止或超过4秒未刷新时必须关闭scheduler准入；恢复时重新检查FIFO队首。
 - SIGTERM先关闭准入，最长300秒drain，再审计取消。
 - 无Prod DB/COS/LLM/飞书配置和网络listener。
 

@@ -17,6 +17,8 @@ const (
 var (
 	// ErrInvalidReadinessConfig means a root-owned expected value is unsafe.
 	ErrInvalidReadinessConfig = errors.New("invalid sandbox readiness config")
+	// ErrReadinessUnavailable means infrastructure cannot safely accept work.
+	ErrReadinessUnavailable = errors.New("sandbox readiness unavailable")
 )
 
 // ReadinessCode is a bounded health reason without paths or host details.
@@ -228,18 +230,52 @@ func (c *ReadinessChecker) RequireAdmission(ctx context.Context) error {
 		return err
 	}
 	if !result.Ready {
-		return ErrSchedulerActiveLimit
+		if len(result.Failures) == 1 &&
+			result.Failures[0] == ReadinessPressureBlocked {
+			return ErrSchedulerActiveLimit
+		}
+		return ErrReadinessUnavailable
 	}
+	return nil
+}
+
+// SyncAdmission is the single bridge from probed readiness to the scheduler's
+// atomically enforced FIFO gate. The T10 sampler/watchdog owns its cadence.
+func (c *ReadinessChecker) SyncAdmission(
+	ctx context.Context,
+	scheduler *Scheduler,
+) error {
+	if scheduler == nil {
+		return ErrInvalidReadinessConfig
+	}
+	err := c.RequireAdmission(ctx)
+	if err != nil {
+		scheduler.SetAdmission(false, err)
+		return err
+	}
+	scheduler.SetAdmission(true, nil)
 	return nil
 }
 
 func validReadinessConfig(config ReadinessConfig) bool {
 	return safeReadinessPath(config.ParentCgroupPath, "/sys/fs/cgroup/") &&
 		safeReadinessPath(config.WorkloadCgroupPath, "/sys/fs/cgroup/") &&
-		config.ParentCgroupPath != config.WorkloadCgroupPath &&
+		strictPathDescendant(
+			config.ParentCgroupPath,
+			config.WorkloadCgroupPath,
+		) &&
 		safeReadinessPath(config.DataRootPath, "/opt/numind-sandbox/") &&
 		validFilesystemUUID(config.DataRootUUID) &&
 		validPinnedImage(config.ImageDigest)
+}
+
+func strictPathDescendant(parent string, child string) bool {
+	relative, err := filepath.Rel(parent, child)
+	if err != nil || relative == "." || filepath.IsAbs(relative) {
+		return false
+	}
+	return relative != ".." &&
+		!strings.HasPrefix(relative, ".."+string(filepath.Separator))
 }
 
 func safeReadinessPath(value string, prefix string) bool {

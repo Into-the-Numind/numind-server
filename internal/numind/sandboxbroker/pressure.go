@@ -78,21 +78,34 @@ type PressureController struct {
 	workloadHigh     int64
 	workloadRecovery int64
 	workloadShed     int64
+	now              func() time.Time
 
 	admissionAllowed bool
 	reason           PressureReason
 	lastObservedAt   time.Time
+	lastReceivedAt   time.Time
 	workloadHighRuns int
 	workloadShedRuns int
 	hostLowRuns      int
 	recoveryRuns     int
 	shedRequestedAt  map[string]time.Time
+	leaseLifecycles  map[string]PressureLease
 }
 
 // NewPressureController derives thresholds only from a sealed capacity plan.
 func NewPressureController(
 	plan CapacityPlan,
 ) (*PressureController, error) {
+	return newPressureControllerWithClock(plan, time.Now)
+}
+
+func newPressureControllerWithClock(
+	plan CapacityPlan,
+	now func() time.Time,
+) (*PressureController, error) {
+	if now == nil {
+		return nil, ErrInvalidPressureConfig
+	}
 	values, err := plan.SystemdValues()
 	if err != nil {
 		return nil, ErrInvalidPressureConfig
@@ -108,18 +121,28 @@ func NewPressureController(
 		workloadHigh:     high,
 		workloadRecovery: recovery,
 		workloadShed:     shed,
-		admissionAllowed: true,
+		now:              now,
+		reason:           PressureReasonSamplingGap,
 		shedRequestedAt:  make(map[string]time.Time),
+		leaseLifecycles:  make(map[string]PressureLease),
 	}, nil
 }
 
-// AdmissionAllowed reports the current gate without exposing counters.
+// AdmissionAllowed fails closed if the trusted sampler has never reported or
+// has stopped reporting, even when no later Observe call arrives.
 func (c *PressureController) AdmissionAllowed() bool {
 	if c == nil {
 		return false
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	now := c.now()
+	if c.lastReceivedAt.IsZero() ||
+		now.Before(c.lastReceivedAt) ||
+		now.Sub(c.lastReceivedAt) > PressureMaximumSampleGap {
+		c.resetRunsLocked()
+		c.stopAdmissionLocked(PressureReasonSamplingGap)
+	}
 	return c.admissionAllowed
 }
 
@@ -137,19 +160,41 @@ func (c *PressureController) Observe(
 		c.stopAdmissionLocked(PressureReasonInvalidSample)
 		return c.decisionLocked(""), err
 	}
+	receivedAt := c.now()
+	if receivedAt.IsZero() {
+		c.stopAdmissionLocked(PressureReasonInvalidSample)
+		return c.decisionLocked(""), ErrInvalidPressureSample
+	}
+	if err := c.validateLeaseContinuityLocked(sample); err != nil {
+		c.stopAdmissionLocked(PressureReasonInvalidSample)
+		return c.decisionLocked(""), err
+	}
+
+	sampleReceiptDelta := sample.ObservedAt.Sub(receivedAt)
+	gapDetected := sampleReceiptDelta > PressureMaximumSampleGap ||
+		sampleReceiptDelta < -PressureMaximumSampleGap
 	if !c.lastObservedAt.IsZero() {
-		gap := sample.ObservedAt.Sub(c.lastObservedAt)
-		if gap <= 0 || gap < PressureSampleInterval ||
-			gap > PressureMaximumSampleGap {
-			if gap > 0 {
-				c.lastObservedAt = sample.ObservedAt
-			}
-			c.resetRunsLocked()
-			c.stopAdmissionLocked(PressureReasonSamplingGap)
-			return c.decisionLocked(""), ErrPressureSamplingGap
-		}
+		observedGap := sample.ObservedAt.Sub(c.lastObservedAt)
+		receivedGap := receivedAt.Sub(c.lastReceivedAt)
+		gapDetected = gapDetected ||
+			observedGap <= 0 ||
+			observedGap > PressureMaximumSampleGap ||
+			receivedGap <= 0 ||
+			receivedGap > PressureMaximumSampleGap
 	}
 	c.lastObservedAt = sample.ObservedAt
+	c.lastReceivedAt = receivedAt
+
+	if gapDetected {
+		c.resetRunsLocked()
+		c.stopAdmissionLocked(PressureReasonSamplingGap)
+		if sample.HostMemAvailableBytes < HostEmergencyMemoryBytes {
+			c.reason = PressureReasonHostEmergency
+			return c.decisionLocked(c.selectShedLeaseLocked(sample)),
+				ErrPressureSamplingGap
+		}
+		return c.decisionLocked(""), ErrPressureSamplingGap
+	}
 
 	c.workloadHighRuns = nextPressureRun(
 		c.workloadHighRuns,
@@ -202,7 +247,7 @@ func validatePressureSample(sample PressureSample) error {
 	if sample.ObservedAt.IsZero() ||
 		sample.WorkloadMemoryBytes < 0 ||
 		sample.WorkloadMemoryBytes > capacitySampleMaximum ||
-		sample.HostMemAvailableBytes <= 0 ||
+		sample.HostMemAvailableBytes < 0 ||
 		sample.HostMemAvailableBytes > capacitySampleMaximum ||
 		len(sample.Leases) > SchedulerTotalContainerMax {
 		return ErrInvalidPressureSample
@@ -234,6 +279,28 @@ func validatePressureSample(sample PressureSample) error {
 			return ErrInvalidPressureSample
 		}
 	}
+	return nil
+}
+
+func (c *PressureController) validateLeaseContinuityLocked(
+	sample PressureSample,
+) error {
+	next := make(map[string]PressureLease, len(sample.Leases))
+	for _, lease := range sample.Leases {
+		previous, seen := c.leaseLifecycles[lease.LeaseID]
+		if seen {
+			if !lease.StartedAt.Equal(previous.StartedAt) {
+				return ErrInvalidPressureSample
+			}
+			if lease.State == LeaseOutputPersisting &&
+				previous.State == LeaseOutputPersisting &&
+				!lease.PersistingSince.Equal(previous.PersistingSince) {
+				return ErrInvalidPressureSample
+			}
+		}
+		next[lease.LeaseID] = lease
+	}
+	c.leaseLifecycles = next
 	return nil
 }
 
