@@ -1,8 +1,8 @@
 # 构建阶段 - 在容器内编译，保证 glibc 版本一致
 FROM golang:1.24-bookworm AS builder
 
+# 构建机在国内，Debian 官方源偶发非常慢；默认走国内镜像，仍允许 build-arg 覆盖。
 ARG DEBIAN_MIRROR=https://mirrors.aliyun.com/debian
-
 RUN if [ -n "$DEBIAN_MIRROR" ]; then \
       for source_file in /etc/apt/sources.list /etc/apt/sources.list.d/*.sources; do \
         [ -f "$source_file" ] || continue; \
@@ -38,8 +38,9 @@ FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=Asia/Shanghai
-ARG UBUNTU_MIRROR=http://mirrors.aliyun.com/ubuntu
 
+# 构建机在国内，Ubuntu 官方源偶发非常慢；默认走国内镜像，仍允许 build-arg 覆盖。
+ARG UBUNTU_MIRROR=https://mirrors.aliyun.com/ubuntu
 RUN if [ -n "$UBUNTU_MIRROR" ]; then \
       for source_file in /etc/apt/sources.list /etc/apt/sources.list.d/*.sources; do \
         [ -f "$source_file" ] || continue; \

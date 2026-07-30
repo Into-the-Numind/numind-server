@@ -9,6 +9,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 DOCKERFILE="$REPO_ROOT/Dockerfile"
+DOCKERFILE_ADMIN="$REPO_ROOT/Dockerfile.admin"
 BUILD_AND_PUSH="$SCRIPT_DIR/build-and-push.sh"
 
 fail=0
@@ -79,6 +80,7 @@ verify_checksum_file() {
 cd "$REPO_ROOT"
 
 [ -f "$DOCKERFILE" ] || { echo "test setup error: Dockerfile not found" >&2; exit 2; }
+[ -f "$DOCKERFILE_ADMIN" ] || { echo "test setup error: Dockerfile.admin not found" >&2; exit 2; }
 [ -f "$BUILD_AND_PUSH" ] || { echo "test setup error: build-and-push.sh not found" >&2; exit 2; }
 
 assert_file_contains "$DOCKERFILE" 'FROM golang:1\.24-alpine AS sandbox_artifacts' \
@@ -89,6 +91,10 @@ assert_file_contains "$DOCKERFILE" 'DEBIAN_MIRROR=https://mirrors\.aliyun\.com/d
   "builder stage defaults to domestic Debian mirror"
 assert_file_contains "$DOCKERFILE" 'UBUNTU_MIRROR=https://mirrors\.aliyun\.com/ubuntu' \
   "runtime stage defaults to domestic Ubuntu mirror"
+assert_file_contains "$DOCKERFILE_ADMIN" 'DEBIAN_MIRROR=https://mirrors\.aliyun\.com/debian' \
+  "admin builder stage defaults to domestic Debian mirror"
+assert_file_contains "$DOCKERFILE_ADMIN" 'UBUNTU_MIRROR=https://mirrors\.aliyun\.com/ubuntu' \
+  "admin runtime stage defaults to domestic Ubuntu mirror"
 assert_file_contains "$DOCKERFILE" 'go build .*extldflags "-static".*\./cmd/numind-sandboxd' \
   "sandboxd is built static"
 assert_file_contains "$DOCKERFILE" 'go build .*extldflags "-static".*\./cmd/numind-sandbox-reconcile' \
