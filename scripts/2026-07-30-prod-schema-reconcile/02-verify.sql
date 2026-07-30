@@ -35,9 +35,28 @@ WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'subscription' AND COLUMN_NAME 
 UNION ALL
 SELECT
   'subscription_historical_metadata',
-  IF(SUM(plan_type <> 'monthly' OR cycle_credits <> 2000) = 0, 'PASS', 'FAIL'),
-  CONCAT('rows=', COUNT(*), ',unexpected=', SUM(plan_type <> 'monthly' OR cycle_credits <> 2000)),
-  'all pre-rollout rows monthly/2000'
+  IF(
+    SUM(
+      NOT (
+        (plan_type = 'monthly' AND cycle_credits = 2000)
+        OR (plan_type = 'weekly' AND cycle_credits = 500)
+      )
+    ) = 0,
+    'PASS',
+    'FAIL'
+  ),
+  CONCAT(
+    'rows=', COUNT(*),
+    ',monthly_2000=', SUM(plan_type = 'monthly' AND cycle_credits = 2000),
+    ',weekly_500=', SUM(plan_type = 'weekly' AND cycle_credits = 500),
+    ',unexpected=', SUM(
+      NOT (
+        (plan_type = 'monthly' AND cycle_credits = 2000)
+        OR (plan_type = 'weekly' AND cycle_credits = 500)
+      )
+    )
+  ),
+  'all historical rows keep valid monthly/2000 or weekly/500 metadata'
 FROM subscription
 UNION ALL
 SELECT
