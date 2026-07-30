@@ -1008,7 +1008,14 @@ func (s *AuthSessionService) RefreshOperationAction(
 	if err != nil || summary.Status != waitingState || summary.SessionID != oldSessionID || summary.Phase != oldSession.Phase {
 		return nil, ErrAuthSessionUnavailable
 	}
-	escalateNoopReauth := shouldEscalateConnectionOnlyReauthNoop(oldSession, summary, waitingState, canonicalScopes)
+	escalateNoopReauth := false
+	if shouldEscalateConnectionOnlyReauthNoop(oldSession, summary, waitingState, canonicalScopes) {
+		account, accountErr := s.accounts.Get(ctx, userID, ProviderLark)
+		if accountErr != nil || account == nil || account.Generation != generation {
+			return nil, ErrAuthSessionUnavailable
+		}
+		escalateNoopReauth = accountNeedsCreateAppRecovery(account)
+	}
 	deviceRefresh := oldSession.Phase == model.FeishuAuthPhaseUserAuth &&
 		((oldSession.ProtocolVersion == 1 && (oldSession.State == model.FeishuAuthSessionPending || oldSession.State == model.FeishuAuthSessionSuperseded)) ||
 			(oldSession.ProtocolVersion == 2 && (oldSession.State == model.FeishuAuthSessionPending || oldSession.State == model.FeishuAuthSessionRejected || oldSession.State == model.FeishuAuthSessionExpired)))
@@ -1133,6 +1140,17 @@ func shouldEscalateConnectionOnlyReauthNoop(session *model.FeishuAuthSession, su
 		return false
 	}
 	return true
+}
+
+func accountNeedsCreateAppRecovery(account *model.UserThirdPartyAccount) bool {
+	if account == nil || account.Provider != ProviderLark {
+		return false
+	}
+	if strings.TrimSpace(account.AppID) == "" {
+		return true
+	}
+	return account.ConnectionState == model.FeishuConnectionNone ||
+		account.ConnectionState == model.FeishuConnectionCreatingApp
 }
 
 // RecoverOperationRefreshAction is the retry path for an original browser card

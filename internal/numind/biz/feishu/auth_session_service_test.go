@@ -903,6 +903,9 @@ func TestAuthSessionService_RefreshLegacyUserAuthUsesAtomicDeviceReplacement(t *
 func TestAuthSessionService_RefreshConnectionOnlyReauthNoopEscalatesToCreateApp(t *testing.T) {
 	h := newAuthSessionHarness(t)
 	h.createAccount(model.FeishuConnectionWaitingUserAuth)
+	require.NoError(t, h.db.Model(&model.UserThirdPartyAccount{}).
+		Where("user_id = ? AND provider = ?", 7, ProviderLark).
+		Update("app_id", "").Error)
 	release := make(chan struct{})
 	releaseWorker := releaseAuthSessionCLIFake(t, release)
 	h.cli.urls = []string{"https://open.feishu.cn/page/cli?user_code=RECONNECT_CREATE_APP"}
