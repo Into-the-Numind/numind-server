@@ -229,6 +229,10 @@ func (b *chatbotBiz) UpdateStatus(ctx context.Context, userID uint, id uint, sta
 		return err
 	}
 
+	if config.Status == status && isValidChatbotStatus(status) {
+		return nil
+	}
+
 	if !isValidStatusTransition(config.Status, status) {
 		return errno.ErrInvalidParameter.SetMessage("不允许从 %s 转换到 %s", config.Status, status)
 	}
@@ -581,8 +585,13 @@ func (b *chatbotBiz) getAndCheckOwnership(ctx context.Context, userID uint, id u
 	return config, nil
 }
 
-// isValidStatusTransition 检查状态转换是否合法
-// 2 态合法转换：draft↔published 双向
+// isValidChatbotStatus 检查智能体发布状态是否合法.
+func isValidChatbotStatus(status string) bool {
+	return status == model.ChatbotStatusDraft || status == model.ChatbotStatusPublished
+}
+
+// isValidStatusTransition 检查状态转换是否合法.
+// 2 态合法转换：draft↔published 双向；同状态由 UpdateStatus 幂等处理.
 func isValidStatusTransition(from, to string) bool {
 	switch from {
 	case model.ChatbotStatusDraft:
