@@ -4,8 +4,8 @@ features:
   ndf_version: '3.0'
   description: Run the Dev-proven Sandbox feature on the existing Prod host while isolating its Docker control plane, networks, secrets, mounts, and resource budget from customer-facing services and data.
   classification_reason: 'Standard: production host container-control security, a separate Sandbox runtime, build/deploy scripts, resource policy, and rollback verification span more than three files and are high risk.'
-  last_updated_by: ai-s4-t12-user-api-wiring
-  last_updated_at: '2026-07-30T15:02:05+0800'
+  last_updated_by: ai-s4-t13-admin-composition
+  last_updated_at: '2026-07-30T15:10:19+0800'
   created_at: '2026-07-30T01:26:00+0800'
   track: standard
   stage: S4
@@ -13,7 +13,7 @@ features:
   repos: [numind-server]
   branches: {numind-server: feature/prod-sandbox-isolation}
   worktrees: {numind-server: /private/tmp/wt-prod-sandbox-isolation-numind-server}
-  progress: {total_tasks: 18, completed_tasks: 12, reviewed_tasks: 9, current_task: 'T13 lightweight admin composition'}
+  progress: {total_tasks: 18, completed_tasks: 13, reviewed_tasks: 9, current_task: 'T14 server/admin deploy role contract'}
   artifacts:
     requirement: requirements/prod-sandbox-isolation.md
     proposal: proposals/prod-sandbox-isolation-proposal.md
@@ -29,6 +29,7 @@ features:
     t8_t9_t11_batch1: .ndf/decisions/prod-sandbox-isolation/0008-t8-t9-t11-batch1-verification.md
     t10_sandboxd_process: .ndf/decisions/prod-sandbox-isolation/0009-t10-sandboxd-process.md
     t12_user_api_wiring: .ndf/decisions/prod-sandbox-isolation/0010-t12-user-api-broker-wiring.md
+    t13_admin_composition: .ndf/decisions/prod-sandbox-isolation/0011-t13-admin-lightweight-composition.md
     office_hours_design: /Users/zhiyuchen/.gstack/projects/Into-the-Numind-numind-server/zhiyuchen-feature-prod-sandbox-isolation-design-20260730-023436.md
   decisions:
   - 'Use the existing Prod cloud server rather than adding a separate cloud server.'
@@ -73,6 +74,7 @@ features:
   - 'T8/T9/T11 review: quick quality review PASS, initial spec recheck found 5 P1 that were fixed, final reviewer recheck PASS. Focused race tests, go test ./..., and task lint all passed; task lint required GOPROXY=https://goproxy.cn,direct and PATH including GOPATH/bin after proxy.golang.org/PATH issues.'
   - 'T10: numind-sandboxd composition root, fixed Docker runtime adapter, Linux pressure/readiness probes, sampling watchdog, and 300-second shutdown drain are implemented. config_prod.yaml is rejected by the daemon, Prod data/server were untouched, focused race tests, Linux compile checks, go test ./..., and task lint all passed.'
   - 'T12: user API Sandbox wiring now selects disabled/docker/broker backends explicitly, no longer constructs the direct Docker CLI client for broker mode, activates broker leases only after the durable audit row exists, and degrades broker config/runtime failures without blocking NewBiz. Focused race tests, package race tests, go test ./..., and task lint passed.'
+  - 'T13: admin API now uses a lightweight NewAdminBiz composition root, keeps Agent Run cancellation DB-only with a nil in-memory runner, and no longer initializes user-side Sandbox/Agent/Feishu/document/memory/XHS runtime. Focused race tests, related race tests, go test ./..., and task lint passed.'
   blockers: []
 - id: xhs-analytics-summary-tests
   ndf_version: '3.0'
