@@ -295,14 +295,23 @@ func (c *brokerDockerClient) CopyFromContainer(
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return c.decodeBrokerError(resp)
 	}
-	return extractBrokerTar(
+	if err := extractBrokerTar(
 		ctx,
 		resp.Body,
 		hostDstDir,
 		int64(c.cfg.BrokerCopyOutMaxBytes),
 		int64(c.cfg.BrokerSingleFileMaxBytes),
 		c.cfg.BrokerMaxFiles,
-	)
+	); err != nil {
+		return err
+	}
+	if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+		return c.transportError(ctx, err)
+	}
+	if resp.Trailer.Get(BrokerStreamStatusTrailer) != BrokerStreamStatusComplete {
+		return ErrBrokerUnavailable
+	}
+	return nil
 }
 
 func (c *brokerDockerClient) ExecMkdir(ctx context.Context, leaseID string, dirs ...string) error {

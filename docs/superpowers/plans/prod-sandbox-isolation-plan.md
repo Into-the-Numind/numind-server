@@ -287,10 +287,15 @@ T1..T17 ───────────────────────> T
 
 - 新增 `cmd/numind-sandboxd/main.go`
 - 新增 `cmd/numind-sandboxd/main_test.go`
+- 新增 `internal/numind/sandboxbroker/runtime_adapter.go`
+- 新增 `internal/numind/sandboxbroker/runtime_adapter_test.go`
 
 **实现**
 
-- 读取独立非业务配置，初始化journal/runtime/scheduler/recovery/server。
+- 实现 `ContainerRuntime` 的固定 Docker CLI adapter；只能调用 T3
+  `RuntimePolicy` 已校验的 spawn/exec/copy/mkdir/inspect/delete 模板，不新增
+  RPC 可控 Docker 参数。
+- 读取独立非业务配置，初始化journal/runtime adapter/scheduler/recovery/server。
 - SIGTERM先关闭准入，最长300秒drain，再审计取消。
 - 无Prod DB/COS/LLM/飞书配置和网络listener。
 

@@ -249,11 +249,24 @@ type rateLimitedWriter struct {
 }
 
 func (w *rateLimitedWriter) Write(buffer []byte) (int, error) {
-	if len(buffer) > ServerCopyBufferBytes {
-		buffer = buffer[:ServerCopyBufferBytes]
+	written := 0
+	for written < len(buffer) {
+		end := written + ServerCopyBufferBytes
+		if end > len(buffer) {
+			end = len(buffer)
+		}
+		chunk := buffer[written:end]
+		if err := w.rate.wait(w.ctx, len(chunk)); err != nil {
+			return written, err
+		}
+		count, err := w.destination.Write(chunk)
+		written += count
+		if err != nil {
+			return written, err
+		}
+		if count != len(chunk) {
+			return written, io.ErrShortWrite
+		}
 	}
-	if err := w.rate.wait(w.ctx, len(buffer)); err != nil {
-		return 0, err
-	}
-	return w.destination.Write(buffer)
+	return written, nil
 }

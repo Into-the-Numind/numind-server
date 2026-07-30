@@ -13,6 +13,8 @@ const (
 	DefaultBrokerSingleFileMaxBytes = 50 << 20
 	DefaultBrokerMaxFiles           = 10
 	DefaultBrokerMaxConnections     = 32
+	BrokerStreamStatusTrailer       = "X-Numind-Stream-Status"
+	BrokerStreamStatusComplete      = "complete"
 )
 
 type BrokerErrorCode string

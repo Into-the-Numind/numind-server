@@ -218,7 +218,7 @@ func (s *JournalRPCService) Activate(
 	}
 	runID := input.AgentRunID
 	sessionID := input.SandboxSessionID
-	lease, _, err := s.journal.Transition(ctx, TransitionParams{
+	lease, replay, err := s.journal.Transition(ctx, TransitionParams{
 		LeaseID:          leaseID,
 		RequestID:        input.RequestID,
 		To:               LeaseActive,
@@ -228,6 +228,9 @@ func (s *JournalRPCService) Activate(
 	})
 	if err != nil {
 		return err
+	}
+	if replay {
+		return nil
 	}
 	if err := s.scheduler.Activate(leaseID); err != nil {
 		s.finishLease(
@@ -581,14 +584,38 @@ func (s *JournalRPCService) Delete(
 	if err != nil {
 		return err
 	}
+	fingerprint := operationFingerprint("delete", leaseID)
+	status, err := s.journal.reserveRPCOperation(
+		ctx,
+		lease,
+		input.RequestID,
+		"delete",
+		fingerprint,
+	)
+	if err != nil {
+		return err
+	}
+	if status == rpcOperationCompleted {
+		return nil
+	}
+	if status == rpcOperationPending {
+		return ErrRPCReplayResultUnavailable
+	}
 	if lease.State == LeaseTerminated {
-		return s.journal.recordTerminalDelete(ctx, lease, input.RequestID)
+		return s.journal.completeRPCOperation(
+			ctx,
+			leaseID,
+			input.RequestID,
+			"delete",
+			fingerprint,
+			nil,
+		)
 	}
 	reason := TerminationCompleted
 	if lease.State != LeaseDestroying && lease.State != LeaseRecoveryPending {
 		lease, _, err = s.journal.Transition(ctx, TransitionParams{
 			LeaseID:           leaseID,
-			RequestID:         input.RequestID,
+			RequestID:         derivedRPCRequestID(input.RequestID, "destroying"),
 			To:                LeaseDestroying,
 			At:                canonicalJournalTime(time.Now()),
 			TerminationReason: &reason,
@@ -614,7 +641,17 @@ func (s *JournalRPCService) Delete(
 		At:                canonicalJournalTime(time.Now()),
 		TerminationReason: &reason,
 	})
-	return err
+	if err != nil {
+		return err
+	}
+	return s.journal.completeRPCOperation(
+		ctx,
+		leaseID,
+		input.RequestID,
+		"delete",
+		fingerprint,
+		nil,
+	)
 }
 
 func (s *JournalRPCService) leaseForPeer(
@@ -667,14 +704,26 @@ func (s *JournalRPCService) finishFailedCreate(
 	containerID string,
 	reason TerminationReason,
 ) {
-	ctx, cancel := context.WithTimeout(context.Background(), RuntimeExecTimeout)
-	defer cancel()
-	lease, err := s.journal.GetLease(ctx, leaseID)
+	lookupContext, cancelLookup := context.WithTimeout(
+		context.Background(),
+		RuntimeExecTimeout,
+	)
+	lease, err := s.journal.GetLease(lookupContext, leaseID)
+	cancelLookup()
 	if err != nil {
+		cleanupContext, cancelCleanup := context.WithTimeout(
+			context.Background(),
+			RuntimeExecTimeout,
+		)
+		defer cancelCleanup()
+		if containerID == "" ||
+			s.runtime.Delete(cleanupContext, containerID) == nil {
+			_ = s.scheduler.Release(leaseID)
+		}
 		return
 	}
-	if containerID != "" {
-		_ = s.runtime.Delete(ctx, containerID)
+	if lease.ContainerID == "" {
+		lease.ContainerID = containerID
 	}
 	s.finishLease(
 		lease,
@@ -690,7 +739,8 @@ func (s *JournalRPCService) finishLease(
 ) {
 	ctx, cancel := context.WithTimeout(context.Background(), RuntimeExecTimeout)
 	defer cancel()
-	if lease.State != LeaseDestroying {
+	knownContainerID := lease.ContainerID
+	if lease.State != LeaseDestroying && lease.State != LeaseRecoveryPending {
 		next, _, err := s.journal.Transition(ctx, TransitionParams{
 			LeaseID:           lease.LeaseID,
 			RequestID:         requestID,
@@ -700,9 +750,12 @@ func (s *JournalRPCService) finishLease(
 		})
 		if err != nil {
 			s.markRecoveryPending(lease, requestID, reason)
-			return
+		} else {
+			lease = next
+			if lease.ContainerID == "" {
+				lease.ContainerID = knownContainerID
+			}
 		}
-		lease = next
 	}
 	if lease.ContainerID != "" {
 		if err := s.runtime.Delete(ctx, lease.ContainerID); err != nil {
@@ -710,14 +763,20 @@ func (s *JournalRPCService) finishLease(
 			return
 		}
 	}
-	_ = s.scheduler.Release(lease.LeaseID)
-	_, _, _ = s.journal.Transition(ctx, TransitionParams{
+	if err := s.scheduler.Release(lease.LeaseID); err != nil &&
+		!errors.Is(err, ErrSchedulerLeaseNotFound) {
+		s.markRecoveryPending(lease, requestID, reason)
+		return
+	}
+	if _, _, err := s.journal.Transition(ctx, TransitionParams{
 		LeaseID:           lease.LeaseID,
 		RequestID:         derivedRPCRequestID(requestID, "terminated"),
 		To:                LeaseTerminated,
 		At:                canonicalJournalTime(time.Now()),
 		TerminationReason: &reason,
-	})
+	}); err != nil {
+		s.markRecoveryPending(lease, requestID, reason)
+	}
 }
 
 func (s *JournalRPCService) markRecoveryPending(
@@ -926,65 +985,11 @@ func (j *Journal) completeRPCOperation(
 
 func validRPCOperationKind(kind string) bool {
 	switch kind {
-	case "exec", "copy_in", "copy_out", "mkdir":
+	case "exec", "copy_in", "copy_out", "mkdir", "delete":
 		return true
 	default:
 		return false
 	}
-}
-
-func (j *Journal) recordTerminalDelete(
-	ctx context.Context,
-	lease Lease,
-	requestID string,
-) error {
-	if j == nil || lease.State != LeaseTerminated || !validRequestID(requestID) {
-		return ErrRPCProtocol
-	}
-	fingerprint := operationFingerprint("delete", lease.LeaseID)
-	j.mu.RLock()
-	defer j.mu.RUnlock()
-	if j.closed {
-		return ErrJournalClosed
-	}
-	transaction, err := j.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin terminal delete replay: %w", err)
-	}
-	defer func() { _ = transaction.Rollback() }()
-	event, found, err := eventByRequestTx(ctx, transaction, requestID)
-	if err != nil {
-		return err
-	}
-	if found {
-		if event.LeaseID != lease.LeaseID {
-			return ErrIdempotencyConflict
-		}
-		if event.EventType == "transition" &&
-			event.StateTo == LeaseDestroying {
-			return nil
-		}
-		if event.EventType == "delete_completed" &&
-			event.RequestHash == fingerprint {
-			return nil
-		}
-		return ErrIdempotencyConflict
-	}
-	if err := insertEventTx(ctx, transaction, LeaseEvent{
-		RequestID:   requestID,
-		RequestHash: fingerprint,
-		LeaseID:     lease.LeaseID,
-		EventType:   "delete_completed",
-		StateFrom:   LeaseTerminated,
-		StateTo:     LeaseTerminated,
-		CreatedAt:   canonicalJournalTime(time.Now()),
-	}); err != nil {
-		return err
-	}
-	if err := transaction.Commit(); err != nil {
-		return fmt.Errorf("commit terminal delete replay: %w", err)
-	}
-	return nil
 }
 
 type CreateLeaseRPCRequest struct {
@@ -1092,7 +1097,9 @@ func NewServer(
 	}
 	server.http = &http.Server{
 		Handler:           server,
+		ReadTimeout:       RuntimeSessionTimeout,
 		ReadHeaderTimeout: 5 * time.Second,
+		WriteTimeout:      RuntimeSessionTimeout,
 		IdleTimeout:       30 * time.Second,
 		MaxHeaderBytes:    int(config.MetadataMaxBytes),
 		ConnContext: func(ctx context.Context, connection net.Conn) context.Context {
@@ -1450,11 +1457,12 @@ func (s *Server) handleFiles(
 			s.writeError(writer, request, err)
 			return
 		}
-		defer source.Close()
+		const streamStatusTrailer = "X-Numind-Stream-Status"
 		writer.Header().Set("Content-Type", "application/x-tar")
+		writer.Header().Set("Trailer", streamStatusTrailer)
 		writer.WriteHeader(http.StatusOK)
 		buffer := make([]byte, ServerCopyBufferBytes)
-		_, _ = io.CopyBuffer(
+		_, copyErr := io.CopyBuffer(
 			&maxBytesWriter{
 				dst:      s.copies.writer(copyContext, writer),
 				remain:   DefaultCopyOutLimits().MaxTotalBytes + (2 << 20),
@@ -1463,6 +1471,12 @@ func (s *Server) handleFiles(
 			source,
 			buffer,
 		)
+		closeErr := source.Close()
+		if copyErr != nil || closeErr != nil {
+			writer.Header().Set(streamStatusTrailer, "error")
+			return
+		}
+		writer.Header().Set(streamStatusTrailer, "complete")
 	default:
 		s.methodNotAllowed(writer, "GET, PUT")
 	}
@@ -1746,6 +1760,7 @@ func listenServerUnix(config ServerConfig) (*net.UnixListener, socketIdentity, e
 	if err != nil {
 		return nil, socketIdentity{}, fmt.Errorf("listen broker Unix socket: %w", err)
 	}
+	listener.SetUnlinkOnClose(false)
 	identity, err := inspectServerSocket(config)
 	if err != nil {
 		_ = listener.Close()

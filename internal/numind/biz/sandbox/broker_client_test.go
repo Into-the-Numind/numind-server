@@ -1047,11 +1047,13 @@ func brokerCopyOutHandler(t *testing.T, write func(*tar.Writer)) http.Handler {
 			return
 		}
 		w.Header().Set("Content-Type", "application/x-tar")
+		w.Header().Set("Trailer", BrokerStreamStatusTrailer)
 		tw := tar.NewWriter(w)
 		write(tw)
 		if err := tw.Close(); err != nil {
 			t.Errorf("close tar: %v", err)
 		}
+		w.Header().Set(BrokerStreamStatusTrailer, BrokerStreamStatusComplete)
 	})
 }
 
