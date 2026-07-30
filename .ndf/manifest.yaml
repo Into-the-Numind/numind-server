@@ -4,8 +4,8 @@ features:
   ndf_version: '3.0'
   description: Run the Dev-proven Sandbox feature on the existing Prod host while isolating its Docker control plane, networks, secrets, mounts, and resource budget from customer-facing services and data.
   classification_reason: 'Standard: production host container-control security, a separate Sandbox runtime, build/deploy scripts, resource policy, and rollback verification span more than three files and are high risk.'
-  last_updated_by: ai-s4-t17-broker-deploy-runbook
-  last_updated_at: '2026-07-30T15:53:40+0800'
+  last_updated_by: ai-s4-t18-final-security-gate
+  last_updated_at: '2026-07-30T16:07:10+0800'
   created_at: '2026-07-30T01:26:00+0800'
   track: standard
   stage: S4
@@ -13,7 +13,7 @@ features:
   repos: [numind-server]
   branches: {numind-server: feature/prod-sandbox-isolation}
   worktrees: {numind-server: /private/tmp/wt-prod-sandbox-isolation-numind-server}
-  progress: {total_tasks: 18, completed_tasks: 17, reviewed_tasks: 9, current_task: 'T18 final integration security gate'}
+  progress: {total_tasks: 18, completed_tasks: 18, reviewed_tasks: 9, current_task: 'S4 implementation complete; independent review and S5 Dev same-shape verification pending'}
   artifacts:
     requirement: requirements/prod-sandbox-isolation.md
     proposal: proposals/prod-sandbox-isolation-proposal.md
@@ -34,6 +34,8 @@ features:
     t15_sandbox_artifacts: .ndf/decisions/prod-sandbox-isolation/0013-t15-sandbox-artifacts.md
     t16_rootless_provisioning: .ndf/decisions/prod-sandbox-isolation/0014-t16-rootless-provisioning.md
     t17_broker_deploy_runbook: .ndf/decisions/prod-sandbox-isolation/0015-t17-broker-deploy-runbook.md
+    t18_final_security_gate: .ndf/decisions/prod-sandbox-isolation/0016-t18-final-security-gate.md
+    security_contract: .ndf/features/prod-sandbox-isolation/security-contract.md
     office_hours_design: /Users/zhiyuchen/.gstack/projects/Into-the-Numind-numind-server/zhiyuchen-feature-prod-sandbox-isolation-design-20260730-023436.md
   decisions:
   - 'Use the existing Prod cloud server rather than adding a separate cloud server.'
@@ -83,6 +85,7 @@ features:
   - 'T15: server image now builds/carries numind-sandboxd, numind-sandbox-reconcile, and sandbox-artifacts.sha256; build-and-push prints artifact checksums; prod still passes WITH_DOCKER_CLI=false so the API image does not install Docker CLI. Local shell/static artifact checks and command package tests passed; real Docker build was blocked by DockerHub token-fetch timeout and is reserved for strict build-server verification.'
   - 'T16: rootless host provisioning now creates/validates the same-host Sandbox base through a non-login sandbox user, dedicated API socket group, 8GiB ext4 data-root image, cgroup v2/controller checks, systemd slices/drop-ins, pinned sandbox image digest, sandboxd config/env rendering, broker gid output, and Prod path negative permission checks. Fake-root provisioning tests, bash syntax, git diff --check, and config_prod.yaml unchanged checks passed.'
   - 'T17: broker deployment automation now provisions the host, extracts/checksums sandboxd and reconcile from the server image, drains old broker, atomically replaces binaries, verifies /healthz and /readyz, restores old binaries and runs reconcile dry-run on readiness failure, forwards NUMIND_SANDBOX_* through release/deploy to Prod, and documents the runbook. Preflight fake remote success/failure rollback, provisioning/artifact scripts, deploy replace race, command package tests, bash syntax, git diff --check, and config_prod.yaml unchanged checks passed. deploy.sh was added to the file set because it is the required build-server-to-Prod environment bridge.'
+  - 'T18: final integration/security gate added Go and shell contracts for five-slot FIFO, fixed 512MiB/1CPU/64PIDs runtime limits, no Docker socket/capability escape, broker Unix transport ceilings, deploy/provision/artifact contracts, and config_prod immutability. T18 found a real seccomp_sha256 prefix mismatch in T16/T17 config generation; it was fixed in separate commit 90a2b1ae before T18 resumed. Focused gate scripts, go test ./..., race tests, task lint, and config_prod unchanged checks passed; artifact image build remains static-only locally due DockerHub metadata timeout and must be strict-verified on the build server.'
   blockers: []
 - id: xhs-analytics-summary-tests
   ndf_version: '3.0'
