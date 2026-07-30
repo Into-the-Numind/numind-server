@@ -1,8 +1,7 @@
 [Unit]
 Description=Numind sandboxd constrained broker
-Documentation=internal Numind prod sandbox isolation
-Requires=numind-sandbox-data-root.mount
-After=numind-sandbox-data-root.mount network-online.target
+Requires=opt-numind\x2dsandbox-data\x2droot.mount
+After=opt-numind\x2dsandbox-data\x2droot.mount network-online.target
 Wants=network-online.target
 
 [Service]
@@ -21,10 +20,8 @@ NoNewPrivileges=yes
 PrivateTmp=yes
 PrivateDevices=yes
 ProtectSystem=strict
-ProtectHome=yes
-ReadWritePaths=/opt/numind-sandbox /run/numind-sandbox
-RuntimeDirectory=numind-sandbox
-RuntimeDirectoryMode=2770
+ProtectHome=read-only
+ReadWritePaths=/opt/numind-sandbox/journal /opt/numind-sandbox/tmp /run/numind-sandbox /run/user/%U
 RestrictSUIDSGID=yes
 LockPersonality=yes
 

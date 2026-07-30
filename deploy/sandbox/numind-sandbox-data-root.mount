@@ -1,6 +1,5 @@
 [Unit]
 Description=Numind Sandbox dedicated 8GiB Docker data-root image
-Documentation=internal Numind prod sandbox isolation
 Before=local-fs.target
 
 [Mount]

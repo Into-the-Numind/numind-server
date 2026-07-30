@@ -99,7 +99,10 @@ broker_http_ok() {
     [ "${NUMIND_SANDBOX_TEST_FAIL_READY:-0}" != "1" ] || return 1
     return 0
   fi
-  curl --unix-socket "$SOCKET_PATH" -sf "http://sandboxd${path}" >/dev/null
+  [ -n "${NUMIND_SANDBOX_API_HOST_UID:-}" ] || fail "NUMIND_SANDBOX_API_HOST_UID is required for broker readiness checks"
+  [ -n "${BROKER_GID:-}" ] || fail "NUMIND_SANDBOX_BROKER_GID is required for broker readiness checks"
+  setpriv --reuid="$NUMIND_SANDBOX_API_HOST_UID" --regid="$BROKER_GID" --clear-groups \
+    curl --unix-socket "$SOCKET_PATH" -sf "http://sandboxd${path}" >/dev/null
 }
 
 wait_broker_ready() {
@@ -128,7 +131,10 @@ run_reconcile_dry_run() {
     printf 'reconcile dry-run\n' >> "$(root_path /tmp/sandboxd-deploy.log)"
     return 0
   fi
-  "$reconcile_bin" -broker-socket "$SOCKET_PATH" -config "$RECONCILE_CONFIG" -limit 100 || true
+  [ -n "${NUMIND_SANDBOX_API_HOST_UID:-}" ] || return 0
+  [ -n "${BROKER_GID:-}" ] || return 0
+  setpriv --reuid="$NUMIND_SANDBOX_API_HOST_UID" --regid="$BROKER_GID" --clear-groups \
+    "$reconcile_bin" -broker-socket "$SOCKET_PATH" -config "$RECONCILE_CONFIG" -limit 100 || true
 }
 
 docker_cleanup_unreferenced() {

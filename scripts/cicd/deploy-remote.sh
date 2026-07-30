@@ -224,9 +224,19 @@ if [ "$TARGET" = "server" ]; then
                 "/opt/numind/${ENV}/image/upload/book"
   sudo mkdir -p /opt/numind/config/cert
   sudo chown -R 1001:1001 "/opt/numind/${ENV}" || true
-  sudo chown -R 1001:1001 /opt/numind/config || true
-  sudo chmod -R 775 "/opt/numind/${ENV}"
-  sudo chmod -R 755 /opt/numind/config
+  if [ "$ENV" = "prod" ]; then
+    # Prod app data must stay writable by the API container user but not world
+    # readable. This also keeps the same-host sandbox user from reading prod
+    # application files or secrets through ordinary filesystem permissions.
+    if [ -d "/opt/numind/${ENV}" ]; then
+      sudo find "/opt/numind/${ENV}" -type d -exec chmod 770 {} +
+      sudo find "/opt/numind/${ENV}" -type f -exec chmod 660 {} +
+    fi
+  else
+    sudo chown -R 1001:1001 /opt/numind/config || true
+    sudo chmod -R 775 "/opt/numind/${ENV}"
+    sudo chmod -R 755 /opt/numind/config
+  fi
   # Re-secure secrets file after the recursive chmod above. Mode 600 is
   # owner-only read/write; docker daemon runs as root and bypasses ACLs, so
   # --env-file still works regardless of ownership.

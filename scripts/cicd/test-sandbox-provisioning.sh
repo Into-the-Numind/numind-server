@@ -46,11 +46,12 @@ run_provision() {
   seccomp_hash="$(sha256sum "$SCRIPT_DIR/../../deploy/sandbox/seccomp.json" | awk '{print $1}')"
   NUMIND_SANDBOX_TEST_MODE=1 \
   NUMIND_SANDBOX_ROOT="$root" \
-  NUMIND_SANDBOX_TEST_COMMANDS="slirp4netns newuidmap newgidmap dockerd rootlesskit" \
+  NUMIND_SANDBOX_TEST_COMMANDS="slirp4netns newuidmap newgidmap docker dockerd dockerd-rootless-setuptool.sh rootlesskit" \
   NUMIND_SANDBOX_BROKER_INSTANCE=numind-prod-sandbox-primary \
   NUMIND_SANDBOX_API_HOST_UID=1001 \
   NUMIND_SANDBOX_IMAGE_DIGEST="ccr.ccs.tencentyun.com/youshunumind/sandbox-skill@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" \
   NUMIND_SANDBOX_SECCOMP_SHA256="sha256:${seccomp_hash}" \
+  NUMIND_SANDBOX_BASELINE_BYTES=4294967296 \
   NUMIND_SANDBOX_PARENT_MEMORY_MAX_BYTES=2952790016 \
   NUMIND_SANDBOX_WORKLOAD_MEMORY_MAX_BYTES=2415919104 \
   NUMIND_SANDBOX_WORKLOAD_MEMORY_HIGH_BYTES=2147483648 \
@@ -76,14 +77,16 @@ fi
 for file in \
   "$ROOT_OK/etc/systemd/system/numind-sandbox-control.slice" \
   "$ROOT_OK/etc/systemd/system/numind-sandbox-workload.slice" \
-  "$ROOT_OK/etc/systemd/system/numind-sandbox-data-root.mount" \
+  "$ROOT_OK/etc/systemd/system/opt-numind\\x2dsandbox-data\\x2droot.mount" \
   "$ROOT_OK/etc/systemd/system/numind-sandboxd.service" \
   "$ROOT_OK/etc/systemd/system/numind-sandbox.slice.d/10-capacity.conf" \
   "$ROOT_OK/etc/systemd/system/numind-sandbox-workload.slice.d/10-capacity.conf" \
   "$ROOT_OK/etc/numind-sandbox/sandboxd.yaml" \
   "$ROOT_OK/etc/numind-sandbox/sandboxd.env" \
   "$ROOT_OK/opt/numind-sandbox/seccomp/seccomp.json" \
-  "$ROOT_OK/opt/numind-sandbox/docker-config/daemon.json"
+  "$ROOT_OK/opt/numind-sandbox/.config/docker/daemon.json" \
+  "$ROOT_OK/opt/numind-sandbox/docker-config/daemon.json" \
+  "$ROOT_OK/opt/numind-sandbox/docker-config/config.json"
 do
   if [ -f "$file" ]; then
     pass "created ${file#$ROOT_OK/}"
@@ -99,6 +102,7 @@ else
 fi
 
 if grep -Fq "data_root_uuid: 11111111-2222-3333-4444-555555555555" "$ROOT_OK/etc/numind-sandbox/sandboxd.yaml" &&
+   grep -Fq "baseline_bytes: 4294967296" "$ROOT_OK/etc/numind-sandbox/sandboxd.yaml" &&
    grep -Fq "MemoryMax=2952790016" "$ROOT_OK/etc/systemd/system/numind-sandbox.slice.d/10-capacity.conf" &&
    grep -Fq "MemoryMax=2415919104" "$ROOT_OK/etc/systemd/system/numind-sandbox-workload.slice.d/10-capacity.conf" &&
    grep -Fq "seccomp_path: /opt/numind-sandbox/seccomp/seccomp.json" "$ROOT_OK/etc/numind-sandbox/sandboxd.yaml"; then

@@ -86,6 +86,7 @@ require_sha256_env() {
 }
 
 require_capacity_env() {
+  require_numeric_env NUMIND_SANDBOX_BASELINE_BYTES
   require_numeric_env NUMIND_SANDBOX_PARENT_MEMORY_MAX_BYTES
   require_numeric_env NUMIND_SANDBOX_WORKLOAD_MEMORY_MAX_BYTES
   require_numeric_env NUMIND_SANDBOX_WORKLOAD_MEMORY_HIGH_BYTES
@@ -238,13 +239,13 @@ ensure_subid() {
 require_prerequisite_commands() {
   if [ "$TEST_MODE" = "1" ]; then
     local available=" ${NUMIND_SANDBOX_TEST_COMMANDS:-} "
-    for cmd in slirp4netns newuidmap newgidmap dockerd rootlesskit; do
+    for cmd in slirp4netns newuidmap newgidmap docker dockerd dockerd-rootless-setuptool.sh rootlesskit; do
       [[ "$available" == *" $cmd "* ]] || fail "required rootless prerequisite missing: $cmd"
     done
     return 0
   fi
   local missing=()
-  for cmd in slirp4netns newuidmap newgidmap dockerd rootlesskit; do
+  for cmd in slirp4netns newuidmap newgidmap docker dockerd dockerd-rootless-setuptool.sh rootlesskit; do
     command -v "$cmd" >/dev/null 2>&1 || missing+=("$cmd")
   done
   if [ "${#missing[@]}" -ne 0 ]; then
@@ -253,7 +254,7 @@ require_prerequisite_commands() {
 }
 
 ensure_directories() {
-  for dir in "$SANDBOX_HOME" "$DATA_ROOT" "$SANDBOX_HOME/bin" "$SANDBOX_HOME/journal" "$SANDBOX_HOME/seccomp" "$SANDBOX_HOME/docker-config" "$CONFIG_DIR" "$RUN_DIR"; do
+  for dir in "$SANDBOX_HOME" "$DATA_ROOT" "$SANDBOX_HOME/bin" "$SANDBOX_HOME/journal" "$SANDBOX_HOME/seccomp" "$SANDBOX_HOME/docker-config" "$SANDBOX_HOME/.config/docker" "$SANDBOX_HOME/tmp" "$CONFIG_DIR" "$RUN_DIR"; do
     mkdir -p "$(root_path "$dir")"
   done
   chmod 0750 "$(root_path "$SANDBOX_HOME")"
@@ -322,13 +323,15 @@ install_systemd_units() {
   mkdir -p "$(root_path "$SYSTEMD_DIR")"
   for unit in \
     numind-sandbox-control.slice \
-    numind-sandbox-workload.slice \
-    numind-sandbox-data-root.mount \
-    numind-sandboxd.service
+    numind-sandbox-workload.slice
   do
     cp "$UNIT_SRC_DIR/$unit" "$(root_path "$SYSTEMD_DIR/$unit")"
     chmod 0644 "$(root_path "$SYSTEMD_DIR/$unit")"
   done
+  cp "$UNIT_SRC_DIR/numind-sandbox-data-root.mount" "$(root_path "$SYSTEMD_DIR/opt-numind\\x2dsandbox-data\\x2droot.mount")"
+  chmod 0644 "$(root_path "$SYSTEMD_DIR/opt-numind\\x2dsandbox-data\\x2droot.mount")"
+  cp "$UNIT_SRC_DIR/numind-sandboxd.service" "$(root_path "$SYSTEMD_DIR/numind-sandboxd.service")"
+  chmod 0644 "$(root_path "$SYSTEMD_DIR/numind-sandboxd.service")"
 }
 
 render_capacity_dropins() {
@@ -359,6 +362,17 @@ EOF
 }
 
 render_docker_config() {
+  write_file "$SANDBOX_HOME/.config/docker/daemon.json" 0640 <<EOF
+{
+  "data-root": "${DATA_ROOT}/docker",
+  "bridge": "none",
+  "iptables": false,
+  "ip-forward": false,
+  "userland-proxy": false,
+  "live-restore": false
+}
+EOF
+  chown_file "$SANDBOX_HOME/.config/docker/daemon.json" "$SANDBOX_USER:$SANDBOX_GROUP"
   write_file "$SANDBOX_HOME/docker-config/daemon.json" 0640 <<EOF
 {
   "data-root": "${DATA_ROOT}/docker",
@@ -370,6 +384,10 @@ render_docker_config() {
 }
 EOF
   chown_file "$SANDBOX_HOME/docker-config/daemon.json" "$SANDBOX_USER:$SANDBOX_GROUP"
+  write_file "$SANDBOX_HOME/docker-config/config.json" 0600 <<EOF
+{}
+EOF
+  chown_file "$SANDBOX_HOME/docker-config/config.json" "$SANDBOX_USER:$SANDBOX_GROUP"
 }
 
 install_seccomp_profile() {
@@ -410,7 +428,7 @@ sandboxd:
     allowed_tool_env_keys: [NUMIND_OUTPUT_FORMAT]
   capacity:
     evidence_mode: fresh
-    baseline_bytes: ${NUMIND_SANDBOX_PARENT_MEMORY_MAX_BYTES}
+    baseline_bytes: ${NUMIND_SANDBOX_BASELINE_BYTES}
     parent_max_bytes: ${NUMIND_SANDBOX_PARENT_MEMORY_MAX_BYTES}
     workload_max_bytes: ${NUMIND_SANDBOX_WORKLOAD_MEMORY_MAX_BYTES}
     workload_high_bytes: ${NUMIND_SANDBOX_WORKLOAD_MEMORY_HIGH_BYTES}
@@ -420,8 +438,8 @@ sandboxd:
     control_max_bytes: ${NUMIND_SANDBOX_CONTROL_MEMORY_MAX_BYTES}
     parent_headroom_bytes: ${NUMIND_SANDBOX_PARENT_HEADROOM_BYTES}
   readiness:
-    parent_cgroup_path: /sys/fs/cgroup/numind-sandbox.slice
-    workload_cgroup_path: /sys/fs/cgroup/numind-sandbox.slice/numind-sandbox-workload.slice
+    parent_cgroup_path: /sys/fs/cgroup/numind.slice/numind-sandbox.slice
+    workload_cgroup_path: /sys/fs/cgroup/numind.slice/numind-sandbox.slice/numind-sandbox-workload.slice
     data_root_path: ${DATA_ROOT}
     data_root_uuid: ${uuid}
 EOF
@@ -438,15 +456,33 @@ EOF
 }
 
 enable_linger_and_units() {
+  local sandbox_uid
+  sandbox_uid="$(user_field "$SANDBOX_USER" uid)"
   if [ "$TEST_MODE" = "1" ]; then
     log_action "loginctl enable-linger $SANDBOX_USER"
     log_action "systemctl daemon-reload"
-    log_action "systemctl enable numind-sandbox-data-root.mount numind-sandboxd.service"
+    log_action "systemctl enable --now opt-numind\\x2dsandbox-data\\x2droot.mount"
+    log_action "chown -R $SANDBOX_USER:$SANDBOX_GROUP $DATA_ROOT"
+    log_action "dockerd-rootless-setuptool.sh install $SANDBOX_USER"
+    log_action "systemctl --user -M $SANDBOX_USER@ enable --now docker.service"
+    log_action "systemctl enable numind-sandboxd.service"
     return 0
   fi
   loginctl enable-linger "$SANDBOX_USER"
   systemctl daemon-reload
-  systemctl enable numind-sandbox-data-root.mount numind-sandboxd.service
+  systemctl enable --now opt-numind\\x2dsandbox-data\\x2droot.mount
+  chown -R "$SANDBOX_USER:$SANDBOX_GROUP" "$DATA_ROOT"
+  systemctl start "user@${sandbox_uid}.service" || true
+  if [ ! -f "$SANDBOX_HOME/.config/systemd/user/docker.service" ]; then
+    runuser -u "$SANDBOX_USER" -- env \
+      HOME="$SANDBOX_HOME" \
+      XDG_RUNTIME_DIR="/run/user/${sandbox_uid}" \
+      PATH="/usr/bin:/sbin:/usr/sbin:/usr/local/bin:/bin" \
+      dockerd-rootless-setuptool.sh install --force
+  fi
+  systemctl --user -M "$SANDBOX_USER@" daemon-reload || true
+  systemctl --user -M "$SANDBOX_USER@" enable --now docker.service
+  systemctl enable numind-sandboxd.service
 }
 
 stat_mode() {

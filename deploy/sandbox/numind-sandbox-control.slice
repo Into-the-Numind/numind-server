@@ -1,6 +1,5 @@
 [Unit]
 Description=Numind Sandbox broker/control slice
-Documentation=internal Numind prod sandbox isolation
 Before=slices.target
 
 [Slice]

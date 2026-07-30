@@ -1,6 +1,5 @@
 [Unit]
 Description=Numind Sandbox workload container slice
-Documentation=internal Numind prod sandbox isolation
 Before=slices.target
 
 [Slice]
