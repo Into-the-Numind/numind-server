@@ -10,9 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -1054,6 +1052,8 @@ type socketIdentity struct {
 	inode  uint64
 }
 
+var socketUmaskMu sync.Mutex
+
 // Server exposes RPCService only through one authenticated Unix socket.
 type Server struct {
 	config     ServerConfig
@@ -1722,76 +1722,23 @@ func listenServerUnix(config ServerConfig) (*net.UnixListener, socketIdentity, e
 	}
 	_ = unix.Close(parentFD)
 
+	socketUmaskMu.Lock()
+	previousUmask := unix.Umask(0o117)
 	listener, err := net.ListenUnix(
 		"unix",
 		&net.UnixAddr{Name: config.SocketPath, Net: "unix"},
 	)
+	unix.Umask(previousUmask)
+	socketUmaskMu.Unlock()
 	if err != nil {
 		return nil, socketIdentity{}, fmt.Errorf("listen broker Unix socket: %w", err)
 	}
-	identity, err := secureServerSocketFD(listener, config)
+	identity, err := inspectServerSocket(config)
 	if err != nil {
 		_ = listener.Close()
-		return nil, socketIdentity{}, err
+		return nil, socketIdentity{}, ErrUnsafeServerSocket
 	}
 	return listener, identity, nil
-}
-
-func secureServerSocketFD(
-	listener *net.UnixListener,
-	config ServerConfig,
-) (socketIdentity, error) {
-	if runtime.GOOS != "linux" {
-		if err := os.Chown(
-			config.SocketPath,
-			int(config.SocketUID),
-			int(config.SocketGID),
-		); err != nil {
-			return socketIdentity{}, ErrUnsafeServerSocket
-		}
-		if err := os.Chmod(
-			config.SocketPath,
-			os.FileMode(ServerSocketMode),
-		); err != nil {
-			return socketIdentity{}, ErrUnsafeServerSocket
-		}
-		return inspectServerSocket(config)
-	}
-	raw, err := listener.SyscallConn()
-	if err != nil {
-		return socketIdentity{}, ErrUnsafeServerSocket
-	}
-	var fdStat unix.Stat_t
-	var controlErr error
-	if err := raw.Control(func(fd uintptr) {
-		if err := unix.Fchown(
-			int(fd),
-			int(config.SocketUID),
-			int(config.SocketGID),
-		); err != nil {
-			controlErr = err
-			return
-		}
-		if err := unix.Fchmod(int(fd), ServerSocketMode); err != nil {
-			controlErr = err
-			return
-		}
-		controlErr = unix.Fstat(int(fd), &fdStat)
-	}); err != nil || controlErr != nil {
-		return socketIdentity{}, ErrUnsafeServerSocket
-	}
-	pathIdentity, err := inspectServerSocket(config)
-	if err != nil {
-		return socketIdentity{}, ErrUnsafeServerSocket
-	}
-	fdIdentity := socketIdentity{
-		device: uint64(fdStat.Dev),
-		inode:  uint64(fdStat.Ino),
-	}
-	if pathIdentity != fdIdentity {
-		return socketIdentity{}, ErrUnsafeServerSocket
-	}
-	return fdIdentity, nil
 }
 
 func removeSafeStaleSocket(config ServerConfig, parentFD int) error {
