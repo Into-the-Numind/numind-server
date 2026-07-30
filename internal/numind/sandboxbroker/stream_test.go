@@ -112,16 +112,24 @@ func TestStreamCanonicalCopyPaths(t *testing.T) {
 		want CopyOutSource
 	}{
 		{
-			raw:  "/workdir/output",
-			want: CopyOutSource{Directory: "/workdir", Entry: "output"},
+			raw: "/workdir/output",
+			want: CopyOutSource{
+				Root:        "/workdir",
+				Relative:    "output",
+				ArchiveName: "output",
+			},
 		},
 		{
 			raw:  "/workdir/output/.",
-			want: CopyOutSource{Directory: "/workdir/output", Entry: "."},
+			want: CopyOutSource{Root: "/workdir", Relative: "output"},
 		},
 		{
-			raw:  "/workdir/output/report.pdf",
-			want: CopyOutSource{Directory: "/workdir/output", Entry: "report.pdf"},
+			raw: "/workdir/output/report.pdf",
+			want: CopyOutSource{
+				Root:        "/workdir",
+				Relative:    "output/report.pdf",
+				ArchiveName: "report.pdf",
+			},
 		},
 	} {
 		got, err := CanonicalCopyOutPath(test.raw)
@@ -226,12 +234,37 @@ func TestStreamCopyBoundedCancellationClosesBlockedDestination(t *testing.T) {
 	}
 }
 
+func TestStreamCopyExactCancellationClosesBlockedDestination(t *testing.T) {
+	destinationReader, destinationWriter := io.Pipe()
+	t.Cleanup(func() { _ = destinationReader.Close() })
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		_, err := copyExactCancelable(
+			ctx,
+			destinationWriter,
+			strings.NewReader("payload"),
+			int64(len("payload")),
+		)
+		result <- err
+	}()
+	cancel()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("copyExactCancelable err = %v; want context canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("copyExactCancelable did not close a blocked destination")
+	}
+}
+
 func TestStreamExtractTarRoundTripAndBoundaries(t *testing.T) {
 	archive := buildTestTar(t, map[string][]byte{
 		"report.txt":        []byte("report"),
 		"nested/result.csv": []byte("a,b\n1,2\n"),
 	}, nil)
-	dest := t.TempDir()
+	dest := secureTempDir(t)
 	stats, err := ExtractTarStream(
 		context.Background(),
 		io.NopCloser(bytes.NewReader(archive)),
@@ -266,7 +299,7 @@ func TestStreamExtractTarRoundTripAndBoundaries(t *testing.T) {
 	stats, err = ExtractTarStream(
 		context.Background(),
 		io.NopCloser(bytes.NewReader(archive)),
-		t.TempDir(),
+		secureTempDir(t),
 		StreamLimits{
 			MaxSingleBytes: MaxSingleFileBytes,
 			MaxTotalBytes:  MaxCopyOutBytes,
@@ -300,7 +333,7 @@ func TestStreamExtractTarRejectsLimitsAboveHardCeilings(t *testing.T) {
 			_, err := ExtractTarStream(
 				context.Background(),
 				io.NopCloser(strings.NewReader("")),
-				t.TempDir(),
+				secureTempDir(t),
 				limits,
 			)
 			if !errors.Is(err, ErrStreamPolicyDenied) {
@@ -329,7 +362,7 @@ func TestStreamExtractTarRejectsArchiveAttacks(t *testing.T) {
 			_, err := ExtractTarStream(
 				context.Background(),
 				io.NopCloser(bytes.NewReader(archive)),
-				t.TempDir(),
+				secureTempDir(t),
 				StreamLimits{MaxSingleBytes: 16, MaxTotalBytes: 32, MaxFiles: 2},
 			)
 			if !errors.Is(err, ErrStreamPolicyDenied) {
@@ -348,7 +381,7 @@ func TestStreamExtractTarRejectsOversizeCountOverwriteAndDestinationSymlink(t *t
 	_, err := ExtractTarStream(
 		context.Background(),
 		io.NopCloser(bytes.NewReader(oversized)),
-		t.TempDir(),
+		secureTempDir(t),
 		StreamLimits{MaxSingleBytes: 16, MaxTotalBytes: 32, MaxFiles: 2},
 	)
 	if !errors.Is(err, ErrStreamOutputTooLarge) {
@@ -363,14 +396,14 @@ func TestStreamExtractTarRejectsOversizeCountOverwriteAndDestinationSymlink(t *t
 	_, err = ExtractTarStream(
 		context.Background(),
 		io.NopCloser(bytes.NewReader(archive)),
-		t.TempDir(),
+		secureTempDir(t),
 		StreamLimits{MaxSingleBytes: 16, MaxTotalBytes: 32, MaxFiles: 2},
 	)
 	if !errors.Is(err, ErrStreamOutputTooLarge) {
 		t.Fatalf("file-count err = %v", err)
 	}
 
-	dest := t.TempDir()
+	dest := secureTempDir(t)
 	if err := os.WriteFile(filepath.Join(dest, "existing"), []byte("keep"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -389,7 +422,7 @@ func TestStreamExtractTarRejectsOversizeCountOverwriteAndDestinationSymlink(t *t
 		t.Fatalf("existing file changed: %q err=%v", body, readErr)
 	}
 
-	dest = t.TempDir()
+	dest = secureTempDir(t)
 	victim := t.TempDir()
 	if err := os.Symlink(victim, filepath.Join(dest, "nested")); err != nil {
 		t.Fatal(err)
@@ -409,6 +442,30 @@ func TestStreamExtractTarRejectsOversizeCountOverwriteAndDestinationSymlink(t *t
 	}
 }
 
+func TestStreamExtractTarRejectsDestinationAncestorSymlink(t *testing.T) {
+	outer := secureTempDir(t)
+	victim := secureTempDir(t)
+	if err := os.Mkdir(filepath.Join(victim, "nested"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(victim, filepath.Join(outer, "linked")); err != nil {
+		t.Fatal(err)
+	}
+	archive := buildTestTar(t, map[string][]byte{"escape": []byte("no")}, nil)
+	_, err := ExtractTarStream(
+		context.Background(),
+		io.NopCloser(bytes.NewReader(archive)),
+		filepath.Join(outer, "linked", "nested"),
+		StreamLimits{MaxSingleBytes: 16, MaxTotalBytes: 32, MaxFiles: 2},
+	)
+	if !errors.Is(err, ErrStreamPolicyDenied) {
+		t.Fatalf("destination ancestor symlink err = %v; want policy denied", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(victim, "nested", "escape")); !os.IsNotExist(statErr) {
+		t.Fatalf("archive escaped through destination ancestor symlink: %v", statErr)
+	}
+}
+
 func TestStreamExtractTarCancellationClosesSlowReader(t *testing.T) {
 	reader, writer := io.Pipe()
 	headerReady := make(chan struct{})
@@ -416,7 +473,7 @@ func TestStreamExtractTarCancellationClosesSlowReader(t *testing.T) {
 	writerDone := make(chan struct{})
 	ctx, cancel := context.WithCancel(context.Background())
 	result := make(chan error, 1)
-	dest := t.TempDir()
+	dest := secureTempDir(t)
 	go func() {
 		_, err := ExtractTarStream(
 			ctx,
@@ -500,4 +557,13 @@ func buildTestTar(t *testing.T, files map[string][]byte, extra []tar.Header) []b
 	}
 	_ = writer.Close()
 	return buffer.Bytes()
+}
+
+func secureTempDir(t *testing.T) string {
+	t.Helper()
+	resolved, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resolved
 }

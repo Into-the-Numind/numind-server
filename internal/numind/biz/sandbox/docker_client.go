@@ -114,6 +114,215 @@ type InspectResult struct {
 // dockerBinary returns the docker CLI binary name; var so tests can override.
 var dockerBinary = "docker"
 
+const dockerCopyInHelper = `
+import os
+import secrets
+import sys
+
+def parts(value):
+    items = value.split("/")
+    if not items or any(
+        item in ("", ".", "..") or "/" in item or "\x00" in item
+        for item in items
+    ):
+        raise ValueError("unsafe relative path")
+    return items
+
+def open_parent(root, relative):
+    items = parts(relative)
+    current = os.open(
+        root,
+        os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+    )
+    try:
+        for item in items[:-1]:
+            next_fd = os.open(
+                item,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+                dir_fd=current,
+            )
+            os.close(current)
+            current = next_fd
+        return current, items[-1]
+    except BaseException:
+        os.close(current)
+        raise
+
+if len(sys.argv) != 3:
+    raise ValueError("invalid copy-in arguments")
+parent_fd, leaf = open_parent(sys.argv[1], sys.argv[2])
+temporary = ""
+file_fd = -1
+try:
+    for _ in range(32):
+        candidate = ".numind-copy-" + secrets.token_hex(16)
+        try:
+            file_fd = os.open(
+                candidate,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL |
+                os.O_CLOEXEC | os.O_NOFOLLOW,
+                0o600,
+                dir_fd=parent_fd,
+            )
+            temporary = candidate
+            break
+        except FileExistsError:
+            pass
+    if file_fd < 0:
+        raise FileExistsError("cannot allocate temporary copy target")
+    while True:
+        chunk = sys.stdin.buffer.read(65536)
+        if not chunk:
+            break
+        view = memoryview(chunk)
+        while view:
+            written = os.write(file_fd, view)
+            view = view[written:]
+    os.fsync(file_fd)
+    os.close(file_fd)
+    file_fd = -1
+    os.link(
+        temporary,
+        leaf,
+        src_dir_fd=parent_fd,
+        dst_dir_fd=parent_fd,
+        follow_symlinks=False,
+    )
+    os.unlink(temporary, dir_fd=parent_fd)
+    temporary = ""
+finally:
+    if file_fd >= 0:
+        os.close(file_fd)
+    if temporary:
+        try:
+            os.unlink(temporary, dir_fd=parent_fd)
+        except FileNotFoundError:
+            pass
+    os.close(parent_fd)
+`
+
+const dockerCopyOutHelper = `
+import os
+import posixpath
+import stat
+import sys
+import tarfile
+
+def parts(value):
+    items = value.split("/")
+    if not items or any(
+        item in ("", ".", "..") or "/" in item or "\x00" in item
+        for item in items
+    ):
+        raise ValueError("unsafe relative path")
+    return items
+
+def open_child(parent_fd, name, directory):
+    before = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    if directory and not stat.S_ISDIR(before.st_mode):
+        raise ValueError("non-directory path component")
+    if not directory and not (
+        stat.S_ISDIR(before.st_mode) or stat.S_ISREG(before.st_mode)
+    ):
+        raise ValueError("unsupported output file type")
+    if stat.S_ISREG(before.st_mode) and before.st_nlink != 1:
+        raise ValueError("hardlinked output is not allowed")
+    flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK
+    if directory:
+        flags |= os.O_DIRECTORY
+    child = os.open(name, flags, dir_fd=parent_fd)
+    after = os.fstat(child)
+    if before.st_dev != after.st_dev or before.st_ino != after.st_ino:
+        os.close(child)
+        raise ValueError("output changed during traversal")
+    if directory and not stat.S_ISDIR(after.st_mode):
+        os.close(child)
+        raise ValueError("non-directory path component")
+    if not directory and not (
+        stat.S_ISDIR(after.st_mode) or stat.S_ISREG(after.st_mode)
+    ):
+        os.close(child)
+        raise ValueError("unsupported output file type")
+    if stat.S_ISREG(after.st_mode) and after.st_nlink != 1:
+        os.close(child)
+        raise ValueError("hardlinked output is not allowed")
+    return child
+
+def open_relative(root, relative):
+    current = os.open(
+        root,
+        os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+    )
+    try:
+        items = parts(relative)
+        for item in items[:-1]:
+            next_fd = open_child(current, item, True)
+            os.close(current)
+            current = next_fd
+        result = open_child(current, items[-1], False)
+        os.close(current)
+        return result
+    except BaseException:
+        os.close(current)
+        raise
+
+def tar_info(name, metadata):
+    info = tarfile.TarInfo(name)
+    info.uid = 1000
+    info.gid = 1000
+    info.uname = ""
+    info.gname = ""
+    info.mtime = 0
+    if stat.S_ISDIR(metadata.st_mode):
+        info.type = tarfile.DIRTYPE
+        info.mode = 0o700
+        info.size = 0
+    elif stat.S_ISREG(metadata.st_mode):
+        info.type = tarfile.REGTYPE
+        info.mode = 0o600
+        info.size = metadata.st_size
+    else:
+        raise ValueError("unsupported output file type")
+    return info
+
+def emit(archive, fd, archive_name):
+    metadata = os.fstat(fd)
+    if stat.S_ISREG(metadata.st_mode):
+        if not archive_name:
+            raise ValueError("regular file requires archive name")
+        with os.fdopen(os.dup(fd), "rb", closefd=True) as source:
+            archive.addfile(tar_info(archive_name, metadata), source)
+        return
+    if not stat.S_ISDIR(metadata.st_mode):
+        raise ValueError("unsupported output file type")
+    if archive_name:
+        archive.addfile(tar_info(archive_name, metadata))
+    for name in sorted(os.listdir(fd)):
+        if name in ("", ".", "..") or "/" in name or "\x00" in name:
+            raise ValueError("unsafe output name")
+        child = open_child(fd, name, False)
+        try:
+            nested_name = posixpath.join(archive_name, name) if archive_name else name
+            emit(archive, child, nested_name)
+        finally:
+            os.close(child)
+
+if len(sys.argv) != 4:
+    raise ValueError("invalid copy-out arguments")
+source_fd = open_relative(sys.argv[1], sys.argv[2])
+try:
+    if not sys.argv[3] and not stat.S_ISDIR(os.fstat(source_fd).st_mode):
+        raise ValueError("contents-only source must be a directory")
+    with tarfile.open(
+        fileobj=sys.stdout.buffer,
+        mode="w|",
+        format=tarfile.PAX_FORMAT,
+    ) as archive:
+        emit(archive, source_fd, sys.argv[3])
+finally:
+    os.close(source_fd)
+`
+
 // dockerCLIClient implements DockerClient by exec'ing the host "docker"
 // binary. Requires:
 //   - docker CLI present on PATH inside the numind-server container
@@ -350,7 +559,23 @@ func (c *dockerCLIClient) ListByLabel(ctx context.Context, label string) ([]stri
 // The parent directory of dstPath must already exist in the container; callers
 // stage it via ExecMkdir.
 func (c *dockerCLIClient) CopyToContainer(ctx context.Context, containerID, dstPath string, content io.Reader) error {
-	cleanPath, err := canonicalDockerCopyInPath(dstPath)
+	return c.copyToContainer(
+		ctx,
+		containerID,
+		dstPath,
+		content,
+		sandboxbroker.MaxSingleFileBytes,
+	)
+}
+
+func (c *dockerCLIClient) copyToContainer(
+	ctx context.Context,
+	containerID string,
+	dstPath string,
+	content io.Reader,
+	maxBytes int64,
+) error {
+	target, err := canonicalDockerCopyInTarget(dstPath)
 	if err != nil {
 		return err
 	}
@@ -360,9 +585,9 @@ func (c *dockerCLIClient) CopyToContainer(ctx context.Context, containerID, dstP
 	}
 
 	cmd := exec.CommandContext(ctx, dockerBinary,
-		"exec", "-i", containerID, "/bin/sh", "-c",
-		`set -C; umask 077; exec cat > "$1"`,
-		"numind-copy-in", cleanPath,
+		"exec", "-i", containerID,
+		"python3", "-c", dockerCopyInHelper,
+		target.Root, target.Relative,
 	)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -378,15 +603,16 @@ func (c *dockerCLIClient) CopyToContainer(ctx context.Context, containerID, dstP
 		ctx,
 		stdin,
 		reader,
-		sandboxbroker.MaxSingleFileBytes,
+		maxBytes,
 		sandboxbroker.ErrStreamInputTooLarge,
 	)
-	closeErr := stdin.Close()
 	if copyErr != nil {
 		_ = cmd.Process.Kill()
+		_ = stdin.Close()
 		_ = cmd.Wait()
 		return mapDockerStreamError(copyErr)
 	}
+	closeErr := stdin.Close()
 	waitErr := cmd.Wait()
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return ctxErr
@@ -417,6 +643,22 @@ func (c *dockerCLIClient) CopyToContainer(ctx context.Context, containerID, dstP
 // A missing srcPath returns nil (the caller — eg CollectOutputs — treats an
 // empty output directory as legitimate when the Python script produced nothing).
 func (c *dockerCLIClient) CopyFromContainer(ctx context.Context, containerID, srcPath, hostDstDir string) error {
+	return c.copyFromContainer(
+		ctx,
+		containerID,
+		srcPath,
+		hostDstDir,
+		sandboxbroker.DefaultCopyOutLimits(),
+	)
+}
+
+func (c *dockerCLIClient) copyFromContainer(
+	ctx context.Context,
+	containerID string,
+	srcPath string,
+	hostDstDir string,
+	limits sandboxbroker.StreamLimits,
+) error {
 	source, err := sandboxbroker.CanonicalCopyOutPath(srcPath)
 	if err != nil {
 		return ErrSandboxPolicyDenied
@@ -425,7 +667,8 @@ func (c *dockerCLIClient) CopyFromContainer(ctx context.Context, containerID, sr
 	// Produce the tar stream inside the container and extract it incrementally.
 	produce := exec.CommandContext(ctx, dockerBinary,
 		"exec", containerID,
-		"tar", "-cf", "-", "-C", source.Directory, source.Entry,
+		"python3", "-c", dockerCopyOutHelper,
+		source.Root, source.Relative, source.ArchiveName,
 	)
 	stdout, err := produce.StdoutPipe()
 	if err != nil {
@@ -440,7 +683,7 @@ func (c *dockerCLIClient) CopyFromContainer(ctx context.Context, containerID, sr
 		ctx,
 		stdout,
 		hostDstDir,
-		sandboxbroker.DefaultCopyOutLimits(),
+		limits,
 	)
 	if extractErr != nil {
 		_ = produce.Process.Kill()
@@ -488,23 +731,42 @@ func captureStderr(err error) string {
 	return ""
 }
 
-func canonicalDockerCopyInPath(raw string) (string, error) {
+type dockerCopyInTarget struct {
+	Root     string
+	Relative string
+}
+
+func canonicalDockerCopyInTarget(raw string) (dockerCopyInTarget, error) {
 	if strings.HasPrefix(path.Clean(raw), "/skills/") {
 		parts := strings.Split(strings.TrimPrefix(path.Clean(raw), "/skills/"), "/")
 		if len(parts) < 2 {
-			return "", ErrSandboxPolicyDenied
+			return dockerCopyInTarget{}, ErrSandboxPolicyDenied
 		}
 		clean, err := sandboxbroker.CanonicalCopyInPath(raw, []string{parts[0]})
 		if err != nil {
-			return "", ErrSandboxPolicyDenied
+			return dockerCopyInTarget{}, ErrSandboxPolicyDenied
 		}
-		return clean, nil
+		return dockerCopyInTarget{
+			Root:     "/skills",
+			Relative: strings.TrimPrefix(clean, "/skills/"),
+		}, nil
 	}
 	clean, err := sandboxbroker.CanonicalCopyInPath(raw, nil)
 	if err != nil {
-		return "", ErrSandboxPolicyDenied
+		return dockerCopyInTarget{}, ErrSandboxPolicyDenied
 	}
-	return clean, nil
+	return dockerCopyInTarget{
+		Root:     "/workdir",
+		Relative: strings.TrimPrefix(clean, "/workdir/"),
+	}, nil
+}
+
+func canonicalDockerCopyInPath(raw string) (string, error) {
+	target, err := canonicalDockerCopyInTarget(raw)
+	if err != nil {
+		return "", err
+	}
+	return path.Join(target.Root, target.Relative), nil
 }
 
 func safeDockerCopyReader(reader io.Reader) (io.ReadCloser, bool) {
@@ -516,6 +778,8 @@ func safeDockerCopyReader(reader io.Reader) (io.ReadCloser, bool) {
 	case *strings.Reader:
 		return io.NopCloser(typed), true
 	case *io.PipeReader:
+		return typed, true
+	case io.ReadCloser:
 		return typed, true
 	default:
 		return nil, false

@@ -14,7 +14,7 @@ import (
 
 func TestRuntimeSpawnSpecIsFullyFixed(t *testing.T) {
 	policy := testRuntimePolicy(t)
-	spec, err := policy.SpawnSpec("lease-123", "broker-primary")
+	spec, err := policy.spawnSpec("lease-123", "broker-primary")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,7 +100,7 @@ func TestRuntimeSpawnSpecIsFullyFixed(t *testing.T) {
 }
 
 func TestRuntimeDockerSpawnArgsCannotBeBuiltFromMutableSpec(t *testing.T) {
-	specType := reflect.TypeOf(RuntimeSpawnSpec{})
+	specType := reflect.TypeOf(runtimeSpawnSpec{})
 	if _, exported := specType.MethodByName("DockerArgs"); exported {
 		t.Fatal("RuntimeSpawnSpec exposes an executable DockerArgs method")
 	}
@@ -152,10 +152,10 @@ func TestRuntimePolicyRejectsMutableOrUnverifiedArtifacts(t *testing.T) {
 func TestRuntimePolicyRejectsUnsafeSeccompFilesystemTargets(t *testing.T) {
 	for _, target := range []string{"symlink", "hardlink", "writable"} {
 		t.Run(target, func(t *testing.T) {
-			parent := t.TempDir()
+			parent := secureTempDir(t)
 			victim := filepath.Join(parent, "victim.json")
 			body := []byte(`{"defaultAction":"SCMP_ACT_ERRNO"}`)
-			if err := os.WriteFile(victim, body, 0o600); err != nil {
+			if err := os.WriteFile(victim, body, 0o400); err != nil {
 				t.Fatal(err)
 			}
 			seccompPath := filepath.Join(parent, "seccomp.json")
@@ -189,11 +189,59 @@ func TestRuntimePolicyRejectsUnsafeSeccompFilesystemTargets(t *testing.T) {
 	}
 }
 
+func TestRuntimeDockerSpawnArgsReverifySeccompIdentityAndHash(t *testing.T) {
+	cfg := testRuntimeConfig(t)
+	policy, err := NewRuntimePolicy(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := policy.DockerSpawnArgs("lease-1", "broker-primary"); err != nil {
+		t.Fatalf("initial DockerSpawnArgs: %v", err)
+	}
+
+	replacement := cfg.SeccompPath + ".replacement"
+	body := []byte(`{"defaultAction":"SCMP_ACT_ALLOW"}`)
+	if err := os.WriteFile(replacement, body, 0o400); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(replacement, cfg.SeccompPath); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := policy.DockerSpawnArgs(
+		"lease-1",
+		"broker-primary",
+	); !errors.Is(err, ErrRuntimeIntegrity) {
+		t.Fatalf("replacement seccomp err = %v; want integrity failure", err)
+	}
+}
+
+func TestRuntimePolicyRejectsSeccompAncestorSymlink(t *testing.T) {
+	outer := secureTempDir(t)
+	victim := secureTempDir(t)
+	body := []byte(`{"defaultAction":"SCMP_ACT_ERRNO"}`)
+	seccompPath := filepath.Join(victim, "seccomp.json")
+	if err := os.WriteFile(seccompPath, body, 0o400); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(victim, filepath.Join(outer, "linked")); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(body)
+	cfg := RuntimeConfig{
+		ImageDigest:   SandboxImageRepository + "@sha256:" + strings.Repeat("a", 64),
+		SeccompPath:   filepath.Join(outer, "linked", "seccomp.json"),
+		SeccompSHA256: "sha256:" + hex.EncodeToString(sum[:]),
+	}
+	if _, err := NewRuntimePolicy(cfg); !errors.Is(err, ErrRuntimePolicyDenied) {
+		t.Fatalf("ancestor symlink err = %v; want policy denied", err)
+	}
+}
+
 func TestRuntimeExecSpecFixesIdentityLimitsAndEnvAllowlist(t *testing.T) {
 	policy := testRuntimePolicy(t)
 	argv := []string{"/bin/sh", "-c", "python /workdir/task.py"}
 	env := []string{"LANG=C.UTF-8", "LC_ALL=C.UTF-8", "TZ=Asia/Shanghai", "NUMIND_OUTPUT_FORMAT=pdf"}
-	spec, err := policy.ExecSpec(argv, env)
+	spec, err := policy.execSpec(argv, env)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -221,7 +269,7 @@ func TestRuntimeExecSpecFixesIdentityLimitsAndEnvAllowlist(t *testing.T) {
 		{"UNKNOWN=value"},
 		{"LANG=no\x00pe"},
 	} {
-		if _, err := policy.ExecSpec([]string{"true"}, denied); !errors.Is(err, ErrRuntimePolicyDenied) {
+		if _, err := policy.execSpec([]string{"true"}, denied); !errors.Is(err, ErrRuntimePolicyDenied) {
 			t.Fatalf("env %v err = %v; want policy denied", denied, err)
 		}
 	}
@@ -257,8 +305,8 @@ func TestRuntimeSpawnSpecRejectsLabelInjection(t *testing.T) {
 		{"lease-1", "broker,secondary"},
 		{"", "broker-primary"},
 	} {
-		if _, err := policy.SpawnSpec(values[0], values[1]); !errors.Is(err, ErrRuntimePolicyDenied) {
-			t.Fatalf("SpawnSpec(%q,%q) err = %v", values[0], values[1], err)
+		if _, err := policy.spawnSpec(values[0], values[1]); !errors.Is(err, ErrRuntimePolicyDenied) {
+			t.Fatalf("spawnSpec(%q,%q) err = %v", values[0], values[1], err)
 		}
 	}
 }
@@ -275,8 +323,8 @@ func testRuntimePolicy(t *testing.T) *RuntimePolicy {
 func testRuntimeConfig(t *testing.T) RuntimeConfig {
 	t.Helper()
 	body := []byte(`{"defaultAction":"SCMP_ACT_ERRNO"}`)
-	seccompPath := filepath.Join(t.TempDir(), "seccomp.json")
-	if err := os.WriteFile(seccompPath, body, 0o600); err != nil {
+	seccompPath := filepath.Join(secureTempDir(t), "seccomp.json")
+	if err := os.WriteFile(seccompPath, body, 0o400); err != nil {
 		t.Fatal(err)
 	}
 	sum := sha256.Sum256(body)

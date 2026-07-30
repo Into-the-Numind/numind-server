@@ -64,10 +64,11 @@ type StreamStats struct {
 	Bytes int64
 }
 
-// CopyOutSource is a validated tar working directory and relative source entry.
+// CopyOutSource is a validated source rooted at the fixed /workdir mount.
 type CopyOutSource struct {
-	Directory string
-	Entry     string
+	Root        string
+	Relative    string
+	ArchiveName string
 }
 
 // DefaultCopyOutLimits returns the fixed broker copy-out ceilings.
@@ -86,6 +87,9 @@ func CheckCopyBudget(
 	usedBytes int64,
 	nextBytes int64,
 ) error {
+	if direction != CopyInDirection && direction != CopyOutDirection {
+		return ErrStreamPolicyDenied
+	}
 	if usedFiles < 0 || usedBytes < 0 || nextBytes < 0 ||
 		usedFiles >= MaxCopyFiles || nextBytes > MaxSingleFileBytes {
 		return streamSizeError(direction)
@@ -162,9 +166,16 @@ func CanonicalCopyOutPath(raw string) (CopyOutSource, error) {
 		return CopyOutSource{}, ErrStreamPolicyDenied
 	}
 	if contentsOnly {
-		return CopyOutSource{Directory: clean, Entry: "."}, nil
+		return CopyOutSource{
+			Root:     "/workdir",
+			Relative: strings.TrimPrefix(clean, "/workdir/"),
+		}, nil
 	}
-	return CopyOutSource{Directory: path.Dir(clean), Entry: path.Base(clean)}, nil
+	return CopyOutSource{
+		Root:        "/workdir",
+		Relative:    strings.TrimPrefix(clean, "/workdir/"),
+		ArchiveName: path.Base(clean),
+	}, nil
 }
 
 // CopyBounded streams at most maxBytes with a fixed 64 KiB buffer.
@@ -216,14 +227,7 @@ func ExtractTarStream(
 		limits.MaxFiles > MaxCopyFiles {
 		return StreamStats{}, ErrStreamPolicyDenied
 	}
-	if err := os.MkdirAll(dest, 0o700); err != nil {
-		return StreamStats{}, fmt.Errorf("%w: create destination", ErrStreamUnavailable)
-	}
-	rootFD, err := unix.Open(
-		dest,
-		unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW,
-		0,
-	)
+	rootFD, err := openExistingDirectoryNoFollow(dest, false)
 	if err != nil {
 		return StreamStats{}, stableStreamFileError(err)
 	}
@@ -298,7 +302,7 @@ func ExtractTarStream(
 				return stats, stableStreamFileError(openErr)
 			}
 			file := os.NewFile(uintptr(fd), filepath.Base(name))
-			written, copyErr := copyExactContext(ctx, file, tr, header.Size)
+			written, copyErr := copyExactCancelable(ctx, file, tr, header.Size)
 			closeErr := file.Close()
 			if copyErr != nil || closeErr != nil {
 				_ = unix.Unlinkat(parentFD, name, 0)
@@ -352,15 +356,33 @@ func (w *maxBytesWriter) Write(p []byte) (int, error) {
 	return n, w.limitErr
 }
 
-func copyExactContext(ctx context.Context, dst io.Writer, src io.Reader, size int64) (int64, error) {
+func copyExactCancelable(
+	ctx context.Context,
+	dst io.WriteCloser,
+	src io.Reader,
+	size int64,
+) (int64, error) {
 	if size == 0 {
 		return 0, nil
 	}
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = dst.Close()
+		case <-done:
+		}
+	}()
+	defer close(done)
+
 	written, err := io.CopyBuffer(
 		dst,
 		&contextReader{ctx: ctx, reader: io.LimitReader(src, size)},
 		make([]byte, StreamBufferSize),
 	)
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return written, ctxErr
+	}
 	if err != nil {
 		return written, err
 	}
@@ -368,6 +390,58 @@ func copyExactContext(ctx context.Context, dst io.Writer, src io.Reader, size in
 		return written, io.ErrUnexpectedEOF
 	}
 	return written, nil
+}
+
+func openExistingDirectoryNoFollow(absolutePath string, requirePrivate bool) (int, error) {
+	if absolutePath == "" ||
+		strings.ContainsRune(absolutePath, 0) ||
+		!filepath.IsAbs(absolutePath) ||
+		filepath.Clean(absolutePath) != absolutePath ||
+		absolutePath == string(filepath.Separator) {
+		return -1, unix.EINVAL
+	}
+	parts := strings.Split(
+		strings.TrimPrefix(absolutePath, string(filepath.Separator)),
+		string(filepath.Separator),
+	)
+	currentFD, err := unix.Open(
+		string(filepath.Separator),
+		unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW,
+		0,
+	)
+	if err != nil {
+		return -1, err
+	}
+	for _, part := range parts {
+		if !safePathSegment(part) {
+			_ = unix.Close(currentFD)
+			return -1, unix.EINVAL
+		}
+		nextFD, openErr := unix.Openat(
+			currentFD,
+			part,
+			unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW,
+			0,
+		)
+		_ = unix.Close(currentFD)
+		if openErr != nil {
+			return -1, openErr
+		}
+		if requirePrivate {
+			var stat unix.Stat_t
+			if statErr := unix.Fstat(nextFD, &stat); statErr != nil {
+				_ = unix.Close(nextFD)
+				return -1, statErr
+			}
+			ownerAllowed := stat.Uid == 0 || stat.Uid == uint32(os.Geteuid())
+			if !ownerAllowed || os.FileMode(stat.Mode).Perm()&0o022 != 0 {
+				_ = unix.Close(nextFD)
+				return -1, unix.EPERM
+			}
+		}
+		currentFD = nextFD
+	}
+	return currentFD, nil
 }
 
 func safeArchiveParts(name string) ([]string, error) {
@@ -419,7 +493,9 @@ func openStreamDirAt(rootFD int, parts []string, create bool) (int, error) {
 func stableStreamFileError(err error) error {
 	if errors.Is(err, unix.ELOOP) ||
 		errors.Is(err, unix.ENOTDIR) ||
-		errors.Is(err, unix.EEXIST) {
+		errors.Is(err, unix.EEXIST) ||
+		errors.Is(err, unix.EINVAL) ||
+		errors.Is(err, unix.EPERM) {
 		return ErrStreamPolicyDenied
 	}
 	return fmt.Errorf("%w: filesystem operation", ErrStreamUnavailable)
