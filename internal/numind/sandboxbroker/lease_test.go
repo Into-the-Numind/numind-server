@@ -137,13 +137,16 @@ func TestValidateTransitionRequiresStateSpecificFields(t *testing.T) {
 	activeCurrent.ContainerID = containerID
 	runID := uint64(7)
 	sessionID := uint64(9)
+	activeAt := now.Add(2 * time.Second)
+	activeExpiry := activeAt.Add(MaxActiveLeaseDuration)
 	active := TransitionParams{
 		LeaseID:          current.LeaseID,
 		RequestID:        "active-1",
 		To:               LeaseActive,
-		At:               now.Add(2 * time.Second),
+		At:               activeAt,
 		AgentRunID:       &runID,
 		SandboxSessionID: &sessionID,
+		ExpiresAt:        &activeExpiry,
 	}
 	if err := validateTransitionParams(activeCurrent, active); err != nil {
 		t.Fatalf("valid active transition rejected: %v", err)
@@ -152,6 +155,13 @@ func TestValidateTransitionRequiresStateSpecificFields(t *testing.T) {
 	if !errors.Is(validateTransitionParams(activeCurrent, active), ErrInvalidTransition) {
 		t.Fatal("active transition without run id accepted")
 	}
+	active.AgentRunID = &runID
+	wrongActiveExpiry := activeExpiry.Add(time.Second)
+	active.ExpiresAt = &wrongActiveExpiry
+	if !errors.Is(validateTransitionParams(activeCurrent, active), ErrInvalidTransition) {
+		t.Fatal("active transition without exact absolute expiry accepted")
+	}
+	active.ExpiresAt = &activeExpiry
 
 	outputCurrent := activeCurrent
 	outputCurrent.State = LeaseActive

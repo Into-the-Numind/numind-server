@@ -14,8 +14,10 @@ The journal is therefore a separate, content-free fact source owned only by the
 1. Store leases in a dedicated SQLite database with WAL,
    `synchronous=FULL`, `busy_timeout=5000`, foreign keys, and one database
    connection.
-2. Require a private `0700` parent directory and `0600` database and lock
-   files. Reject symlink, non-regular, or group/world-accessible targets.
+2. Require a private, current-user-owned `0700` parent directory and private
+   database, lock, WAL, and SHM files. Reject symlinks, non-regular files,
+   group/world permissions, unexpected owners, multiple hardlinks, or inode
+   replacement.
 3. Hold a non-blocking file lock for the lifetime of the journal so a second
    broker cannot serve the same state.
 4. Keep `lease_event` append-only and use globally unique request IDs plus
@@ -27,10 +29,13 @@ The journal is therefore a separate, content-free fact source owned only by the
 6. Create every lease unbound. Only `ready -> active` can set the positive
    product run and Sandbox session IDs; later transitions cannot change the
    binding or container identity.
-7. Use explicit legal transitions and separate state-specific stale cutoffs
+7. Activation resets the absolute lease expiry to 300 seconds. Heartbeats
+   cannot extend that deadline, and active leases become stale on either the
+   absolute deadline or the 30-second heartbeat deadline.
+8. Use explicit legal transitions and separate state-specific stale cutoffs
    for expiry, heartbeat, and incomplete external actions.
-8. Bound every list query to at most 1,000 rows.
-9. Store only identifiers, lifecycle states, timestamps, resource counters,
+9. Bound every list query to at most 1,000 rows.
+10. Store only identifiers, lifecycle states, timestamps, resource counters,
    and bounded reason codes. Do not store files, prompts, commands, outputs,
    environment values, credentials, or customer records.
 
@@ -42,6 +47,6 @@ The journal is therefore a separate, content-free fact source owned only by the
 - A subprocess exits without closing SQLite; the parent then reopens the WAL
   database and verifies both the lease and append-only events.
 - Concurrent create replay, lock exclusion, unsafe-path rejection, state
-  invariants, append-only triggers, and inclusive stale boundaries are covered.
+  invariants, hardlink/sidecar rejection, append-only triggers, absolute active
+  expiry, concurrent close, and inclusive stale boundaries are covered.
 - Repository `task lint` passes.
-

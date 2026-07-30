@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -38,7 +39,13 @@ func TestOpenJournalAppliesDurableSettingsAndSecureFiles(t *testing.T) {
 	if busyTimeout != 5000 {
 		t.Fatalf("busy_timeout = %d; want 5000", busyTimeout)
 	}
-	for _, target := range []string{filepath.Dir(path), path, path + ".lock"} {
+	for _, target := range []string{
+		filepath.Dir(path),
+		path,
+		path + ".lock",
+		path + "-wal",
+		path + "-shm",
+	} {
 		info, err := os.Stat(target)
 		if err != nil {
 			t.Fatal(err)
@@ -74,6 +81,33 @@ func TestOpenJournalAppliesDurableSettingsAndSecureFiles(t *testing.T) {
 		if forbidden[strings.ToLower(name)] {
 			t.Fatalf("journal schema contains forbidden business-data column %q", name)
 		}
+	}
+}
+
+func TestJournalSchemaRejectsInvalidLeaseInvariants(t *testing.T) {
+	journal := openTestJournal(t, testJournalPath(t))
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	params := testCreateParams("lease-1", "create-1", now)
+	if _, _, err := journal.CreateLease(context.Background(), params); err != nil {
+		t.Fatal(err)
+	}
+	for name, statement := range map[string]string{
+		"active without container or binding": `
+UPDATE lease SET state='active' WHERE lease_id='lease-1'`,
+		"unknown reconciliation state": `
+UPDATE lease SET reconcile_state='arbitrary' WHERE lease_id='lease-1'`,
+		"non-future expiry": `
+UPDATE lease SET expires_at=created_at WHERE lease_id='lease-1'`,
+		"free-text termination reason": `
+UPDATE lease SET termination_reason='prompt-or-secret' WHERE lease_id='lease-1'`,
+		"terminal state without reason code": `
+UPDATE lease SET state='destroying' WHERE lease_id='lease-1'`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := journal.db.Exec(statement); err == nil {
+				t.Fatalf("invalid direct SQL succeeded: %s", statement)
+			}
+		})
 	}
 }
 
@@ -114,13 +148,10 @@ func TestOpenJournalRejectsUnsafeDirectoryWithoutChangingPermissions(t *testing.
 	}
 }
 
-func TestOpenJournalRejectsSymlinkDatabaseAndLock(t *testing.T) {
-	for _, target := range []string{"database", "lock"} {
+func TestOpenJournalRejectsSymlinkDatabaseLockAndSidecars(t *testing.T) {
+	for _, target := range []string{"database", "lock", "wal", "shm"} {
 		t.Run(target, func(t *testing.T) {
-			parent := filepath.Join(t.TempDir(), "state")
-			if err := os.Mkdir(parent, 0o700); err != nil {
-				t.Fatal(err)
-			}
+			parent := secureTestJournalParent(t)
 			path := filepath.Join(parent, "leases.db")
 			victim := filepath.Join(parent, "victim")
 			if err := os.WriteFile(victim, []byte("do not touch"), 0o600); err != nil {
@@ -129,6 +160,10 @@ func TestOpenJournalRejectsSymlinkDatabaseAndLock(t *testing.T) {
 			link := path
 			if target == "lock" {
 				link = path + ".lock"
+			} else if target == "wal" {
+				link = path + "-wal"
+			} else if target == "shm" {
+				link = path + "-shm"
 			}
 			if err := os.Symlink(victim, link); err != nil {
 				t.Fatal(err)
@@ -140,6 +175,72 @@ func TestOpenJournalRejectsSymlinkDatabaseAndLock(t *testing.T) {
 			body, readErr := os.ReadFile(victim)
 			if readErr != nil || string(body) != "do not touch" {
 				t.Fatalf("victim changed: %q err=%v", body, readErr)
+			}
+		})
+	}
+}
+
+func TestOpenJournalRejectsHardlinkedDatabaseLockAndSidecars(t *testing.T) {
+	for _, target := range []string{"database", "lock", "wal", "shm"} {
+		t.Run(target, func(t *testing.T) {
+			parent := secureTestJournalParent(t)
+			path := filepath.Join(parent, "leases.db")
+			victim := filepath.Join(parent, "victim")
+			if err := os.WriteFile(victim, []byte("do not touch"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			link := path
+			if target == "lock" {
+				link = path + ".lock"
+			} else if target == "wal" {
+				link = path + "-wal"
+			} else if target == "shm" {
+				link = path + "-shm"
+			}
+			if err := os.Link(victim, link); err != nil {
+				t.Fatal(err)
+			}
+			_, err := OpenJournal(context.Background(), path)
+			if !errors.Is(err, ErrUnsafeJournalPath) {
+				t.Fatalf("OpenJournal err = %v; want unsafe path", err)
+			}
+			body, readErr := os.ReadFile(victim)
+			if readErr != nil || string(body) != "do not touch" {
+				t.Fatalf("victim changed: %q err=%v", body, readErr)
+			}
+		})
+	}
+}
+
+func TestOpenJournalRejectsPermissiveDatabaseLockAndSidecars(t *testing.T) {
+	for _, target := range []string{"database", "lock", "wal", "shm"} {
+		t.Run(target, func(t *testing.T) {
+			parent := secureTestJournalParent(t)
+			path := filepath.Join(parent, "leases.db")
+			unsafePath := path
+			if target == "lock" {
+				unsafePath = path + ".lock"
+			} else if target == "wal" {
+				unsafePath = path + "-wal"
+			} else if target == "shm" {
+				unsafePath = path + "-shm"
+			}
+			if err := os.WriteFile(unsafePath, []byte("do not touch"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(unsafePath, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			_, err := OpenJournal(context.Background(), path)
+			if !errors.Is(err, ErrUnsafeJournalPath) {
+				t.Fatalf("OpenJournal err = %v; want unsafe path", err)
+			}
+			info, statErr := os.Stat(unsafePath)
+			if statErr != nil {
+				t.Fatal(statErr)
+			}
+			if got := info.Mode().Perm(); got != 0o644 {
+				t.Fatalf("OpenJournal changed unsafe target mode to %o", got)
 			}
 		})
 	}
@@ -235,10 +336,13 @@ func TestJournalTransitionsHeartbeatAndAppendOnlyEvents(t *testing.T) {
 	}
 	runID := uint64(77)
 	sessionID := uint64(88)
+	activeAt := now.Add(3 * time.Second)
+	activeExpiry := activeAt.Add(MaxActiveLeaseDuration)
 	active := TransitionParams{
 		LeaseID: params.LeaseID, RequestID: "transition-active",
-		To: LeaseActive, At: now.Add(3 * time.Second),
+		To: LeaseActive, At: activeAt,
 		AgentRunID: &runID, SandboxSessionID: &sessionID,
+		ExpiresAt: &activeExpiry,
 	}
 	lease, _, err := journal.Transition(context.Background(), active)
 	if err != nil {
@@ -266,7 +370,7 @@ func TestJournalTransitionsHeartbeatAndAppendOnlyEvents(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	reason := "completed"
+	reason := TerminationCompleted
 	if _, _, err := journal.Transition(context.Background(), TransitionParams{
 		LeaseID: params.LeaseID, RequestID: "transition-destroying",
 		To: LeaseDestroying, At: now.Add(6 * time.Second),
@@ -341,6 +445,40 @@ func TestJournalRejectsIllegalTransitionsAndRequestReuse(t *testing.T) {
 		To: LeaseCreating, At: now.Add(time.Second),
 	}); !errors.Is(err, ErrLeaseNotFound) {
 		t.Fatalf("missing lease transition err = %v", err)
+	}
+
+	if _, _, err := journal.Transition(context.Background(), TransitionParams{
+		LeaseID: params.LeaseID, RequestID: "creating-valid",
+		To: LeaseCreating, At: now.Add(2 * time.Second),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sensitiveFreeText := TerminationReason("prompt=customer-data api_key=secret stdout=payload")
+	if _, _, err := journal.Transition(context.Background(), TransitionParams{
+		LeaseID: params.LeaseID, RequestID: "destroy-sensitive",
+		To: LeaseDestroying, At: now.Add(3 * time.Second),
+		TerminationReason: &sensitiveFreeText,
+	}); !errors.Is(err, ErrInvalidTransition) {
+		t.Fatalf("sensitive free-text reason err = %v", err)
+	}
+	var storedReason string
+	if err := journal.db.QueryRow(
+		`SELECT termination_reason FROM lease WHERE lease_id = ?`,
+		params.LeaseID,
+	).Scan(&storedReason); err != nil {
+		t.Fatal(err)
+	}
+	if storedReason != "" {
+		t.Fatalf("sensitive termination reason persisted: %q", storedReason)
+	}
+	var unsafeEventCount int
+	if err := journal.db.QueryRow(
+		`SELECT COUNT(*) FROM lease_event WHERE reason != ''`,
+	).Scan(&unsafeEventCount); err != nil {
+		t.Fatal(err)
+	}
+	if unsafeEventCount != 0 {
+		t.Fatalf("unexpected reason-bearing events = %d", unsafeEventCount)
 	}
 }
 
@@ -431,19 +569,68 @@ func TestJournalStaleAndRecoveryQueriesAreBoundedAndDeterministic(t *testing.T) 
 	}
 	runID := uint64(2)
 	sessionID := uint64(3)
+	activeAt := base.Add(-time.Minute)
+	activeExpiry := activeAt.Add(MaxActiveLeaseDuration)
 	if _, _, err := journal.Transition(context.Background(), TransitionParams{
 		LeaseID: "lease-b", RequestID: "active-b",
-		To: LeaseActive, At: base.Add(-time.Minute),
+		To: LeaseActive, At: activeAt,
 		AgentRunID: &runID, SandboxSessionID: &sessionID,
+		ExpiresAt: &activeExpiry,
 	}); err != nil {
 		t.Fatal(err)
 	}
+
+	absoluteParams := testCreateParams("lease-d", "create-d", base.Add(-6*time.Minute))
+	if _, _, err := journal.CreateLease(context.Background(), absoluteParams); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := journal.Transition(context.Background(), TransitionParams{
+		LeaseID: "lease-d", RequestID: "creating-d",
+		To: LeaseCreating, At: base.Add(-5*time.Minute - 2*time.Second),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	absoluteContainerID := "container-d"
+	absoluteReadyExpiry := base.Add(10 * time.Minute)
+	if _, _, err := journal.Transition(context.Background(), TransitionParams{
+		LeaseID: "lease-d", RequestID: "ready-d",
+		To: LeaseReady, At: base.Add(-5*time.Minute - time.Second),
+		ContainerID: &absoluteContainerID, ExpiresAt: &absoluteReadyExpiry,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	absoluteActiveAt := base.Add(-MaxActiveLeaseDuration)
+	absoluteActiveExpiry := absoluteActiveAt.Add(MaxActiveLeaseDuration)
+	absoluteRunID := uint64(4)
+	absoluteSessionID := uint64(5)
+	if _, _, err := journal.Transition(context.Background(), TransitionParams{
+		LeaseID: "lease-d", RequestID: "active-d",
+		To: LeaseActive, At: absoluteActiveAt,
+		AgentRunID: &absoluteRunID, SandboxSessionID: &absoluteSessionID,
+		ExpiresAt: &absoluteActiveExpiry,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := journal.RecordHeartbeat(
+		context.Background(), "lease-d", "heartbeat-d", base.Add(-30*time.Second),
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := journal.RecordHeartbeat(
+		context.Background(), "lease-d", "heartbeat-at-expiry-d", absoluteActiveExpiry,
+	); !errors.Is(err, ErrInvalidTransition) {
+		t.Fatalf("heartbeat at absolute expiry err = %v", err)
+	}
+
 	cutoff := base.Add(-time.Minute)
-	stale, err := journal.ListStale(context.Background(), cutoff, cutoff, cutoff, 10)
+	stale, err := journal.ListStale(context.Background(), base, cutoff, cutoff, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(stale) != 2 || stale[0].LeaseID != "lease-a" || stale[1].LeaseID != "lease-b" {
+	if len(stale) != 3 ||
+		stale[0].LeaseID != "lease-a" ||
+		stale[1].LeaseID != "lease-b" ||
+		stale[2].LeaseID != "lease-d" {
 		t.Fatalf("stale leases = %v", leaseIDs(stale))
 	}
 	stale, err = journal.ListStale(context.Background(), base, base, base, 1)
@@ -451,7 +638,7 @@ func TestJournalStaleAndRecoveryQueriesAreBoundedAndDeterministic(t *testing.T) 
 		t.Fatalf("bounded stale leases = %v err=%v", leaseIDs(stale), err)
 	}
 
-	reason := "container missing"
+	reason := TerminationContainerMissing
 	reconcile := "pending"
 	if _, _, err := journal.Transition(context.Background(), TransitionParams{
 		LeaseID: "lease-a", RequestID: "creating-a",
@@ -490,6 +677,70 @@ func TestJournalClosedMethodsFailAndCloseIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestJournalCloseWaitsForActiveOperation(t *testing.T) {
+	journal := openTestJournal(t, testJournalPath(t))
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	params := testCreateParams("lease-1", "create-1", now)
+	if _, _, err := journal.CreateLease(context.Background(), params); err != nil {
+		t.Fatal(err)
+	}
+
+	blockingTx, err := journal.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	getResult := make(chan error, 1)
+	go func() {
+		_, getErr := journal.GetLease(context.Background(), params.LeaseID)
+		getResult <- getErr
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if !journal.mu.TryLock() {
+			break
+		}
+		journal.mu.Unlock()
+		if time.Now().After(deadline) {
+			_ = blockingTx.Rollback()
+			t.Fatal("GetLease did not enter an active journal operation")
+		}
+		runtime.Gosched()
+	}
+
+	closeResult := make(chan error, 1)
+	go func() { closeResult <- journal.Close() }()
+	select {
+	case err := <-closeResult:
+		_ = blockingTx.Rollback()
+		t.Fatalf("Close returned before active operation drained: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	if err := blockingTx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-getResult:
+		if err != nil {
+			t.Fatalf("active GetLease failed while Close waited: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("active GetLease did not finish")
+	}
+	select {
+	case err := <-closeResult:
+		if err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close did not finish after active operation drained")
+	}
+	if _, err := journal.GetLease(context.Background(), params.LeaseID); !errors.Is(err, ErrJournalClosed) {
+		t.Fatalf("GetLease after concurrent Close err = %v", err)
+	}
+}
+
 func openTestJournal(t *testing.T, path string) *Journal {
 	t.Helper()
 	journal, err := OpenJournal(context.Background(), path)
@@ -503,6 +754,15 @@ func openTestJournal(t *testing.T, path string) *Journal {
 func testJournalPath(t *testing.T) string {
 	t.Helper()
 	return filepath.Join(t.TempDir(), "state", "leases.db")
+}
+
+func secureTestJournalParent(t *testing.T) string {
+	t.Helper()
+	parent := filepath.Join(t.TempDir(), "state")
+	if err := os.Mkdir(parent, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return parent
 }
 
 func testCreateParams(leaseID string, requestID string, createdAt time.Time) CreateLeaseParams {

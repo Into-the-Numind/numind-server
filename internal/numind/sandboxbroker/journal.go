@@ -41,9 +41,41 @@ CREATE TABLE IF NOT EXISTS lease (
     copy_in_bytes INTEGER NOT NULL DEFAULT 0 CHECK (copy_in_bytes >= 0),
     copy_out_files INTEGER NOT NULL DEFAULT 0 CHECK (copy_out_files >= 0),
     copy_out_bytes INTEGER NOT NULL DEFAULT 0 CHECK (copy_out_bytes >= 0),
-    termination_reason TEXT NOT NULL DEFAULT '',
-    reconcile_state TEXT NOT NULL DEFAULT '',
-    CHECK ((agent_run_id IS NULL) = (sandbox_session_id IS NULL))
+    termination_reason TEXT NOT NULL DEFAULT '' CHECK (termination_reason IN (
+        '','completed','cancelled','queue_timeout','lease_expired',
+        'heartbeat_timeout','create_failed','activation_failed','exec_failed',
+        'exec_timeout','out_of_memory','resource_limit','output_persist_failed',
+        'container_missing','broker_shutdown','recovery_timeout','orphaned',
+        'reconcile_failed'
+    )),
+    reconcile_state TEXT NOT NULL DEFAULT ''
+        CHECK (reconcile_state IN ('','pending','completed','failed')),
+    CHECK ((agent_run_id IS NULL) = (sandbox_session_id IS NULL)),
+    CHECK (agent_run_id IS NULL OR container_id IS NOT NULL),
+    CHECK (created_at <= updated_at),
+    CHECK (expires_at > created_at),
+    CHECK (
+        last_heartbeat_at IS NULL OR
+        (agent_run_id IS NOT NULL AND
+         last_heartbeat_at >= created_at AND
+         last_heartbeat_at <= updated_at)
+    ),
+    CHECK (
+        (state IN ('queued','creating') AND
+         container_id IS NULL AND agent_run_id IS NULL) OR
+        (state = 'ready' AND
+         container_id IS NOT NULL AND agent_run_id IS NULL) OR
+        (state IN ('active','output_persisting') AND
+         container_id IS NOT NULL AND agent_run_id IS NOT NULL AND
+         last_heartbeat_at IS NOT NULL) OR
+        state IN ('destroying','terminated','recovery_pending')
+    ),
+    CHECK (
+        (state IN ('destroying','terminated','recovery_pending') AND
+         termination_reason != '') OR
+        (state NOT IN ('destroying','terminated','recovery_pending') AND
+         termination_reason = '')
+    )
 );
 
 CREATE INDEX IF NOT EXISTS idx_lease_state_updated
@@ -87,6 +119,11 @@ type Journal struct {
 	closed   bool
 }
 
+type privateFileIdentity struct {
+	device uint64
+	inode  uint64
+}
+
 // OpenJournal opens or creates a locked SQLite lease journal at an absolute path.
 func OpenJournal(ctx context.Context, path string) (*Journal, error) {
 	if strings.TrimSpace(path) == "" || !filepath.IsAbs(path) {
@@ -96,37 +133,14 @@ func OpenJournal(ctx context.Context, path string) (*Journal, error) {
 	if err := os.MkdirAll(parent, 0o700); err != nil {
 		return nil, fmt.Errorf("create journal directory: %w", err)
 	}
-	parentInfo, err := os.Lstat(parent)
-	if err != nil {
-		return nil, fmt.Errorf("inspect journal directory: %w", err)
-	}
-	if !parentInfo.IsDir() || parentInfo.Mode()&os.ModeSymlink != 0 || parentInfo.Mode().Perm()&0o077 != 0 {
+	if err := validatePrivateDirectory(parent); err != nil {
 		return nil, ErrUnsafeJournalPath
-	}
-	if pathInfo, statErr := os.Lstat(path); statErr == nil {
-		if !pathInfo.Mode().IsRegular() || pathInfo.Mode()&os.ModeSymlink != 0 {
-			return nil, ErrUnsafeJournalPath
-		}
-	} else if !os.IsNotExist(statErr) {
-		return nil, fmt.Errorf("inspect journal database: %w", statErr)
 	}
 
-	lockFD, err := unix.Open(path+".lock", unix.O_CREAT|unix.O_RDWR|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0o600)
+	lockPath := path + ".lock"
+	lockFile, lockIdentity, err := openPrivateRegular(lockPath, unix.O_CREAT|unix.O_RDWR)
 	if err != nil {
-		if errors.Is(err, unix.ELOOP) {
-			return nil, ErrUnsafeJournalPath
-		}
 		return nil, fmt.Errorf("open journal lock: %w", err)
-	}
-	lockFile := os.NewFile(uintptr(lockFD), "sandbox-journal-lock")
-	lockInfo, err := lockFile.Stat()
-	if err != nil || !lockInfo.Mode().IsRegular() {
-		_ = lockFile.Close()
-		return nil, ErrUnsafeJournalPath
-	}
-	if err := lockFile.Chmod(0o600); err != nil {
-		_ = lockFile.Close()
-		return nil, fmt.Errorf("secure journal lock: %w", err)
 	}
 	if err := unix.Flock(int(lockFile.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
 		_ = lockFile.Close()
@@ -136,11 +150,37 @@ func OpenJournal(ctx context.Context, path string) (*Journal, error) {
 		_ = unix.Flock(int(lockFile.Fd()), unix.LOCK_UN)
 		_ = lockFile.Close()
 	}
+	reopenedLock, reopenedLockIdentity, err := openPrivateRegular(lockPath, unix.O_RDWR)
+	if err != nil || reopenedLockIdentity != lockIdentity {
+		if reopenedLock != nil {
+			_ = reopenedLock.Close()
+		}
+		releaseLock()
+		return nil, ErrUnsafeJournalPath
+	}
+	_ = reopenedLock.Close()
+
+	dbGuard, dbIdentity, err := openPrivateRegular(path, unix.O_CREAT|unix.O_RDWR)
+	if err != nil {
+		releaseLock()
+		return nil, fmt.Errorf("open journal database guard: %w", err)
+	}
+	releaseDBGuard := func() {
+		_ = dbGuard.Close()
+	}
+	for _, sidecar := range []string{path + "-wal", path + "-shm"} {
+		if err := validatePrivateRegularIfExists(sidecar); err != nil {
+			releaseDBGuard()
+			releaseLock()
+			return nil, fmt.Errorf("inspect journal sidecar: %w", err)
+		}
+	}
 
 	uri := (&url.URL{Scheme: "file", Path: path}).String()
-	dsn := uri + "?_journal_mode=WAL&_synchronous=FULL&_busy_timeout=5000&_foreign_keys=ON"
+	dsn := uri + "?mode=rw&_journal_mode=WAL&_synchronous=FULL&_busy_timeout=5000&_foreign_keys=ON"
 	db, err := sql.Open("sqlite3", dsn)
 	if err != nil {
+		releaseDBGuard()
 		releaseLock()
 		return nil, fmt.Errorf("open journal database: %w", err)
 	}
@@ -148,20 +188,90 @@ func OpenJournal(ctx context.Context, path string) (*Journal, error) {
 	db.SetMaxIdleConns(1)
 	if err := db.PingContext(ctx); err != nil {
 		_ = db.Close()
+		releaseDBGuard()
 		releaseLock()
 		return nil, fmt.Errorf("ping journal database: %w", err)
 	}
 	if _, err := db.ExecContext(ctx, journalSchema); err != nil {
 		_ = db.Close()
+		releaseDBGuard()
 		releaseLock()
 		return nil, fmt.Errorf("initialize journal schema: %w", err)
 	}
-	if err := os.Chmod(path, 0o600); err != nil {
+	reopenedDB, reopenedIdentity, err := openPrivateRegular(path, unix.O_RDWR)
+	if err != nil || reopenedIdentity != dbIdentity {
+		if reopenedDB != nil {
+			_ = reopenedDB.Close()
+		}
 		_ = db.Close()
+		releaseDBGuard()
 		releaseLock()
-		return nil, fmt.Errorf("secure journal database: %w", err)
+		return nil, ErrUnsafeJournalPath
 	}
+	_ = reopenedDB.Close()
+	for _, sidecar := range []string{path + "-wal", path + "-shm"} {
+		if err := validatePrivateRegularIfExists(sidecar); err != nil {
+			_ = db.Close()
+			releaseDBGuard()
+			releaseLock()
+			return nil, fmt.Errorf("validate journal sidecar: %w", err)
+		}
+	}
+	releaseDBGuard()
 	return &Journal{db: db, lockFile: lockFile}, nil
+}
+
+func validatePrivateDirectory(path string) error {
+	var stat unix.Stat_t
+	if err := unix.Lstat(path, &stat); err != nil {
+		return fmt.Errorf("inspect private directory: %w", err)
+	}
+	mode := uint32(stat.Mode)
+	if mode&unix.S_IFMT != unix.S_IFDIR ||
+		stat.Uid != uint32(os.Geteuid()) ||
+		os.FileMode(mode).Perm()&0o077 != 0 {
+		return ErrUnsafeJournalPath
+	}
+	return nil
+}
+
+func openPrivateRegular(path string, flags int) (*os.File, privateFileIdentity, error) {
+	fd, err := unix.Open(path, flags|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0o600)
+	if err != nil {
+		if errors.Is(err, unix.ELOOP) {
+			return nil, privateFileIdentity{}, ErrUnsafeJournalPath
+		}
+		return nil, privateFileIdentity{}, err
+	}
+	file := os.NewFile(uintptr(fd), filepath.Base(path))
+	var stat unix.Stat_t
+	if err := unix.Fstat(fd, &stat); err != nil {
+		_ = file.Close()
+		return nil, privateFileIdentity{}, fmt.Errorf("inspect private file: %w", err)
+	}
+	mode := uint32(stat.Mode)
+	if mode&unix.S_IFMT != unix.S_IFREG ||
+		stat.Uid != uint32(os.Geteuid()) ||
+		uint64(stat.Nlink) != 1 ||
+		os.FileMode(mode).Perm()&0o077 != 0 {
+		_ = file.Close()
+		return nil, privateFileIdentity{}, ErrUnsafeJournalPath
+	}
+	return file, privateFileIdentity{
+		device: uint64(stat.Dev),
+		inode:  uint64(stat.Ino),
+	}, nil
+}
+
+func validatePrivateRegularIfExists(path string) error {
+	file, _, err := openPrivateRegular(path, unix.O_RDONLY)
+	if errors.Is(err, unix.ENOENT) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return file.Close()
 }
 
 // Close drains in-process operations and releases the single-instance file lock.
@@ -276,6 +386,9 @@ func (j *Journal) Transition(ctx context.Context, params TransitionParams) (Leas
 	if params.ExpiresAt != nil {
 		expires := canonicalJournalTime(*params.ExpiresAt)
 		params.ExpiresAt = &expires
+	} else if params.To == LeaseActive {
+		expires := params.At.Add(MaxActiveLeaseDuration)
+		params.ExpiresAt = &expires
 	}
 
 	j.mu.RLock()
@@ -313,7 +426,7 @@ func (j *Journal) Transition(ctx context.Context, params TransitionParams) (Leas
 	if err := updateLeaseTx(ctx, tx, next); err != nil {
 		return Lease{}, false, err
 	}
-	reason := ""
+	reason := TerminationReason("")
 	if params.TerminationReason != nil {
 		reason = *params.TerminationReason
 	}
@@ -379,7 +492,7 @@ func (j *Journal) RecordHeartbeat(
 	if err != nil {
 		return Lease{}, false, err
 	}
-	if lease.State != LeaseActive || at.Before(lease.UpdatedAt) {
+	if lease.State != LeaseActive || at.Before(lease.UpdatedAt) || !at.Before(lease.ExpiresAt) {
 		return Lease{}, false, ErrInvalidTransition
 	}
 	lease.LastHeartbeatAt = at
@@ -463,7 +576,11 @@ func (j *Journal) ListStale(
 	return j.list(ctx, leaseSelect+`
  WHERE (
         (state IN (?, ?) AND expires_at <= ?)
-     OR (state = ? AND (last_heartbeat_at IS NULL OR last_heartbeat_at <= ?))
+     OR (state = ? AND (
+            expires_at <= ? OR
+            last_heartbeat_at IS NULL OR
+            last_heartbeat_at <= ?
+        ))
      OR (state IN (?, ?, ?) AND updated_at <= ?)
  )
  ORDER BY updated_at, lease_id LIMIT ?`,
@@ -471,6 +588,7 @@ func (j *Journal) ListStale(
 		LeaseReady,
 		toUnixMillis(expiresAtOrBefore),
 		LeaseActive,
+		toUnixMillis(expiresAtOrBefore),
 		toUnixMillis(heartbeatAtOrBefore),
 		LeaseCreating,
 		LeaseOutputPersisting,
@@ -515,6 +633,7 @@ FROM lease_event WHERE lease_id = ? ORDER BY event_id LIMIT ?`, leaseID, limit)
 		var event LeaseEvent
 		var from string
 		var to string
+		var reason string
 		var createdAt int64
 		if err := rows.Scan(
 			&event.EventID,
@@ -524,13 +643,17 @@ FROM lease_event WHERE lease_id = ? ORDER BY event_id LIMIT ?`, leaseID, limit)
 			&event.EventType,
 			&from,
 			&to,
-			&event.Reason,
+			&reason,
 			&createdAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan lease event: %w", err)
 		}
 		event.StateFrom = LeaseState(from)
 		event.StateTo = LeaseState(to)
+		event.Reason = TerminationReason(reason)
+		if event.Reason != "" && !IsValidTerminationReason(event.Reason) {
+			return nil, ErrInvalidLease
+		}
 		event.CreatedAt = fromUnixMillis(createdAt)
 		events = append(events, event)
 	}
@@ -587,6 +710,7 @@ func scanLease(row rowScanner) (Lease, error) {
 	var updatedAt int64
 	var expiresAt int64
 	var lastHeartbeatAt sql.NullInt64
+	var terminationReason string
 	err := row.Scan(
 		&lease.LeaseID,
 		&lease.RequestID,
@@ -605,7 +729,7 @@ func scanLease(row rowScanner) (Lease, error) {
 		&lease.CopyInBytes,
 		&lease.CopyOutFiles,
 		&lease.CopyOutBytes,
-		&lease.TerminationReason,
+		&terminationReason,
 		&lease.ReconcileState,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -627,6 +751,10 @@ func scanLease(row rowScanner) (Lease, error) {
 	if !IsValidLeaseState(lease.State) {
 		return Lease{}, ErrInvalidLease
 	}
+	lease.TerminationReason = TerminationReason(terminationReason)
+	if lease.TerminationReason != "" && !IsValidTerminationReason(lease.TerminationReason) {
+		return Lease{}, ErrInvalidLease
+	}
 	lease.CreatedAt = fromUnixMillis(createdAt)
 	lease.UpdatedAt = fromUnixMillis(updatedAt)
 	lease.ExpiresAt = fromUnixMillis(expiresAt)
@@ -644,6 +772,7 @@ func eventByRequestTx(ctx context.Context, tx *sql.Tx, requestID string) (LeaseE
 	var event LeaseEvent
 	var from string
 	var to string
+	var reason string
 	var createdAt int64
 	err := tx.QueryRowContext(ctx, `
 SELECT event_id, request_id, request_hash, lease_id, event_type, state_from, state_to, reason, created_at
@@ -655,7 +784,7 @@ FROM lease_event WHERE request_id = ?`, requestID).Scan(
 		&event.EventType,
 		&from,
 		&to,
-		&event.Reason,
+		&reason,
 		&createdAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -666,6 +795,10 @@ FROM lease_event WHERE request_id = ?`, requestID).Scan(
 	}
 	event.StateFrom = LeaseState(from)
 	event.StateTo = LeaseState(to)
+	event.Reason = TerminationReason(reason)
+	if event.Reason != "" && !IsValidTerminationReason(event.Reason) {
+		return LeaseEvent{}, false, ErrInvalidLease
+	}
 	event.CreatedAt = fromUnixMillis(createdAt)
 	return event, true, nil
 }
@@ -782,7 +915,7 @@ func transitionFingerprint(params TransitionParams) string {
 		uint64PointerValue(params.SandboxSessionID),
 		stringPointerValue(params.ContainerID),
 		timePointerValue(params.ExpiresAt),
-		stringPointerValue(params.TerminationReason),
+		terminationReasonPointerValue(params.TerminationReason),
 		stringPointerValue(params.ReconcileState),
 	)
 }
@@ -801,6 +934,13 @@ func uint64PointerValue(value *uint64) any {
 }
 
 func stringPointerValue(value *string) any {
+	if value == nil {
+		return nil
+	}
+	return *value
+}
+
+func terminationReasonPointerValue(value *TerminationReason) any {
 	if value == nil {
 		return nil
 	}

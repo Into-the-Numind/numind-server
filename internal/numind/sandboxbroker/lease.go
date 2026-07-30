@@ -30,6 +30,9 @@ const (
 	LeaseRecoveryPending LeaseState = "recovery_pending"
 )
 
+// MaxActiveLeaseDuration is the absolute lifetime of one activated Sandbox task.
+const MaxActiveLeaseDuration = 5 * time.Minute
+
 // MaxJournalQueryLimit bounds every journal list operation.
 const MaxJournalQueryLimit = 1000
 
@@ -86,6 +89,46 @@ var allowedTransitions = map[LeaseState]map[LeaseState]struct{}{
 	},
 }
 
+// TerminationReason is a content-free code explaining why a lease is closing.
+type TerminationReason string
+
+const (
+	// TerminationCompleted means the requested Sandbox work completed normally.
+	TerminationCompleted TerminationReason = "completed"
+	// TerminationCancelled means the caller cancelled the Sandbox work.
+	TerminationCancelled TerminationReason = "cancelled"
+	// TerminationQueueTimeout means capacity was unavailable before the queue deadline.
+	TerminationQueueTimeout TerminationReason = "queue_timeout"
+	// TerminationLeaseExpired means the absolute active-session deadline elapsed.
+	TerminationLeaseExpired TerminationReason = "lease_expired"
+	// TerminationHeartbeatTimeout means the active caller stopped sending heartbeats.
+	TerminationHeartbeatTimeout TerminationReason = "heartbeat_timeout"
+	// TerminationCreateFailed means fixed-policy container creation failed.
+	TerminationCreateFailed TerminationReason = "create_failed"
+	// TerminationActivationFailed means the product run could not bind to the lease.
+	TerminationActivationFailed TerminationReason = "activation_failed"
+	// TerminationExecFailed means a command failed before output persistence.
+	TerminationExecFailed TerminationReason = "exec_failed"
+	// TerminationExecTimeout means command execution exceeded its fixed deadline.
+	TerminationExecTimeout TerminationReason = "exec_timeout"
+	// TerminationOutOfMemory means the task reached its memory cgroup ceiling.
+	TerminationOutOfMemory TerminationReason = "out_of_memory"
+	// TerminationResourceLimit means another fixed resource ceiling was reached.
+	TerminationResourceLimit TerminationReason = "resource_limit"
+	// TerminationOutputFailed means durable output persistence failed.
+	TerminationOutputFailed TerminationReason = "output_persist_failed"
+	// TerminationContainerMissing means recovery could not find the recorded container.
+	TerminationContainerMissing TerminationReason = "container_missing"
+	// TerminationBrokerShutdown means broker shutdown drained or cancelled the lease.
+	TerminationBrokerShutdown TerminationReason = "broker_shutdown"
+	// TerminationRecoveryTimeout means bounded startup recovery did not finish in time.
+	TerminationRecoveryTimeout TerminationReason = "recovery_timeout"
+	// TerminationOrphaned means a dedicated-daemon container had no matching journal lease.
+	TerminationOrphaned TerminationReason = "orphaned"
+	// TerminationReconcileFailed means the durable product reconciliation failed.
+	TerminationReconcileFailed TerminationReason = "reconcile_failed"
+)
+
 // Lease is the durable, content-free record of one Sandbox container lifecycle.
 type Lease struct {
 	LeaseID           string
@@ -105,7 +148,7 @@ type Lease struct {
 	CopyInBytes       int64
 	CopyOutFiles      int
 	CopyOutBytes      int64
-	TerminationReason string
+	TerminationReason TerminationReason
 	ReconcileState    string
 }
 
@@ -118,7 +161,7 @@ type LeaseEvent struct {
 	EventType   string
 	StateFrom   LeaseState
 	StateTo     LeaseState
-	Reason      string
+	Reason      TerminationReason
 	CreatedAt   time.Time
 }
 
@@ -145,7 +188,7 @@ type TransitionParams struct {
 	SandboxSessionID  *uint64
 	ContainerID       *string
 	ExpiresAt         *time.Time
-	TerminationReason *string
+	TerminationReason *TerminationReason
 	ReconcileState    *string
 }
 
@@ -169,6 +212,32 @@ func CanTransition(from LeaseState, to LeaseState) bool {
 	}
 	_, ok = next[to]
 	return ok
+}
+
+// IsValidTerminationReason reports whether reason is an allowlisted content-free code.
+func IsValidTerminationReason(reason TerminationReason) bool {
+	switch reason {
+	case TerminationCompleted,
+		TerminationCancelled,
+		TerminationQueueTimeout,
+		TerminationLeaseExpired,
+		TerminationHeartbeatTimeout,
+		TerminationCreateFailed,
+		TerminationActivationFailed,
+		TerminationExecFailed,
+		TerminationExecTimeout,
+		TerminationOutOfMemory,
+		TerminationResourceLimit,
+		TerminationOutputFailed,
+		TerminationContainerMissing,
+		TerminationBrokerShutdown,
+		TerminationRecoveryTimeout,
+		TerminationOrphaned,
+		TerminationReconcileFailed:
+		return true
+	default:
+		return false
+	}
 }
 
 func validateCreateLeaseParams(params CreateLeaseParams) error {
@@ -225,8 +294,7 @@ func validateTransitionParams(current Lease, params TransitionParams) error {
 	if params.ContainerID != nil && (strings.TrimSpace(*params.ContainerID) == "" || len(*params.ContainerID) > 128) {
 		return ErrInvalidTransition
 	}
-	if params.TerminationReason != nil && (strings.TrimSpace(*params.TerminationReason) == "" ||
-		len(*params.TerminationReason) > 256) {
+	if params.TerminationReason != nil && !IsValidTerminationReason(*params.TerminationReason) {
 		return ErrInvalidTransition
 	}
 	if params.ReconcileState != nil && *params.ReconcileState != "" &&
@@ -254,11 +322,13 @@ func validateTransitionParams(current Lease, params TransitionParams) error {
 		}
 	case LeaseActive:
 		if params.AgentRunID == nil || params.SandboxSessionID == nil ||
-			*params.AgentRunID == 0 || *params.SandboxSessionID == 0 {
+			*params.AgentRunID == 0 || *params.SandboxSessionID == 0 ||
+			params.ExpiresAt == nil ||
+			!params.ExpiresAt.Equal(at.Add(MaxActiveLeaseDuration)) {
 			return ErrInvalidTransition
 		}
-		if params.ContainerID != nil || params.ExpiresAt != nil ||
-			params.TerminationReason != nil || params.ReconcileState != nil ||
+		if params.ContainerID != nil || params.TerminationReason != nil ||
+			params.ReconcileState != nil ||
 			current.AgentRunID != 0 || current.SandboxSessionID != 0 ||
 			current.ContainerID == "" {
 			return ErrInvalidTransition
