@@ -4,8 +4,8 @@ features:
   ndf_version: '3.0'
   description: Run the Dev-proven Sandbox feature on the existing Prod host while isolating its Docker control plane, networks, secrets, mounts, and resource budget from customer-facing services and data.
   classification_reason: 'Standard: production host container-control security, a separate Sandbox runtime, build/deploy scripts, resource policy, and rollback verification span more than three files and are high risk.'
-  last_updated_by: ai-s4-t14-deploy-role-contract
-  last_updated_at: '2026-07-30T15:19:16+0800'
+  last_updated_by: ai-s4-t15-sandbox-artifacts
+  last_updated_at: '2026-07-30T15:34:54+0800'
   created_at: '2026-07-30T01:26:00+0800'
   track: standard
   stage: S4
@@ -13,7 +13,7 @@ features:
   repos: [numind-server]
   branches: {numind-server: feature/prod-sandbox-isolation}
   worktrees: {numind-server: /private/tmp/wt-prod-sandbox-isolation-numind-server}
-  progress: {total_tasks: 18, completed_tasks: 14, reviewed_tasks: 9, current_task: 'T15 portable sandbox artifacts'}
+  progress: {total_tasks: 18, completed_tasks: 15, reviewed_tasks: 9, current_task: 'T16 rootless host provisioning'}
   artifacts:
     requirement: requirements/prod-sandbox-isolation.md
     proposal: proposals/prod-sandbox-isolation-proposal.md
@@ -31,6 +31,7 @@ features:
     t12_user_api_wiring: .ndf/decisions/prod-sandbox-isolation/0010-t12-user-api-broker-wiring.md
     t13_admin_composition: .ndf/decisions/prod-sandbox-isolation/0011-t13-admin-lightweight-composition.md
     t14_deploy_role_contract: .ndf/decisions/prod-sandbox-isolation/0012-t14-deploy-role-contract.md
+    t15_sandbox_artifacts: .ndf/decisions/prod-sandbox-isolation/0013-t15-sandbox-artifacts.md
     office_hours_design: /Users/zhiyuchen/.gstack/projects/Into-the-Numind-numind-server/zhiyuchen-feature-prod-sandbox-isolation-design-20260730-023436.md
   decisions:
   - 'Use the existing Prod cloud server rather than adding a separate cloud server.'
@@ -77,6 +78,7 @@ features:
   - 'T12: user API Sandbox wiring now selects disabled/docker/broker backends explicitly, no longer constructs the direct Docker CLI client for broker mode, activates broker leases only after the durable audit row exists, and degrades broker config/runtime failures without blocking NewBiz. Focused race tests, package race tests, go test ./..., and task lint passed.'
   - 'T13: admin API now uses a lightweight NewAdminBiz composition root, keeps Agent Run cancellation DB-only with a nil in-memory runner, and no longer initializes user-side Sandbox/Agent/Feishu/document/memory/XHS runtime. Focused race tests, related race tests, go test ./..., and task lint passed.'
   - 'T14: prod deploy-remote now enforces the role contract: user API may mount only sandboxd.sock plus a dedicated broker GID when backend=broker and must provide a stable broker owner ID; disabled mode gets no socket/group; admin is forced to sandbox.backend=disabled and gets no broker or Docker access. Preflight fake Docker assertions, deploy-replace-race regression, bash syntax, git diff --check, and config_prod.yaml unchanged checks passed.'
+  - 'T15: server image now builds/carries numind-sandboxd, numind-sandbox-reconcile, and sandbox-artifacts.sha256; build-and-push prints artifact checksums; prod still passes WITH_DOCKER_CLI=false so the API image does not install Docker CLI. Local shell/static artifact checks and command package tests passed; real Docker build was blocked by DockerHub token-fetch timeout and is reserved for strict build-server verification.'
   blockers: []
 - id: xhs-analytics-summary-tests
   ndf_version: '3.0'

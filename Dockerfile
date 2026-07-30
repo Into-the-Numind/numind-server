@@ -45,13 +45,44 @@ COPY . .
 # 无此 tag 时 fts_chunks 虚拟表建表会失败，store 自动降级为纯向量检索（见 SQLiteVecStore.initFTS）。
 RUN CGO_ENABLED=1 GOOS=linux go build -tags sqlite_fts5 -ldflags="-s -w" -o numind ./cmd/numind
 
+# Sandbox broker/reconcile artifacts are host/runtime utilities, not the main
+# API process. Build them in Alpine with musl and static linking so the Prod host
+# can run sandboxd outside the API container, while the reconcile command remains
+# available inside the release image for rollback/drain repair.
+FROM golang:1.24-alpine AS sandbox_artifacts
+
+RUN apk add --no-cache build-base file
+
+WORKDIR /app
+
+COPY go.mod go.sum ./
+ENV GOPROXY=https://goproxy.cn,direct
+RUN go mod download
+
+COPY . .
+
+ENV CGO_ENABLED=1
+ENV GOOS=linux
+ENV GOARCH=amd64
+
+RUN set -eux; \
+    go build -tags sqlite_fts5 -ldflags='-linkmode external -extldflags "-static" -s -w' -o /out/numind-sandboxd ./cmd/numind-sandboxd; \
+    go build -tags sqlite_fts5 -ldflags='-linkmode external -extldflags "-static" -s -w' -o /out/numind-sandbox-reconcile ./cmd/numind-sandbox-reconcile; \
+    file /out/numind-sandboxd /out/numind-sandbox-reconcile | tee /out/sandbox-artifacts.file; \
+    grep -Eq 'statically linked|static-pie linked' /out/sandbox-artifacts.file; \
+    sha256sum /out/numind-sandboxd /out/numind-sandbox-reconcile > /out/sandbox-artifacts.sha256; \
+    /out/numind-sandboxd -config /tmp/nonexistent-sandboxd.yaml >/tmp/sandboxd.stdout 2>/tmp/sandboxd.stderr || test "$?" -eq 1; \
+    grep -q 'numind-sandboxd config=/tmp/nonexistent-sandboxd.yaml' /tmp/sandboxd.stdout; \
+    /out/numind-sandbox-reconcile -config /tmp/nonexistent-numind.yaml >/tmp/reconcile.stdout 2>/tmp/reconcile.stderr || test "$?" -eq 1; \
+    grep -q 'numind-sandbox-reconcile mode=dry-run' /tmp/reconcile.stdout
+
 # 运行阶段 — FROM 预构建 ML base 镜像
 # 系统依赖（ca-certificates/curl/tzdata/python3/antiword/libgomp1）+ torch CPU +
 # sentence-transformers/pymupdf/markitdown 等已固化在 base，业务构建不再每次部署
 # 跨境重下（详见 Dockerfile.ml-base + scripts/cicd/build-ml-base.sh）。
 # ML_BASE_TAG 在本文件顶部以 global ARG 声明（须在首个 FROM 之前才能在此展开）；
 # 依赖变更时：重建 base（build-ml-base.sh）→ bump 顶部 ML_BASE_TAG 默认值。
-FROM ccr.ccs.tencentyun.com/youshunumind/numind-ml-base:${ML_BASE_TAG}
+FROM ccr.ccs.tencentyun.com/youshunumind/numind-ml-base:${ML_BASE_TAG} AS runtime
 
 # 设置环境变量避免交互式安装（base 已设，此处冗余保留以兼容下方可选的 docker CLI apt 块）
 ENV DEBIAN_FRONTEND=noninteractive
@@ -175,6 +206,9 @@ COPY skills /app/skills
 
 # 从构建阶段复制编译好的二进制文件
 COPY --from=builder /app/numind /app/numind
+COPY --from=sandbox_artifacts /out/numind-sandboxd /app/numind-sandboxd
+COPY --from=sandbox_artifacts /out/numind-sandbox-reconcile /app/numind-sandbox-reconcile
+COPY --from=sandbox_artifacts /out/sandbox-artifacts.sha256 /app/sandbox-artifacts.sha256
 COPY scripts /app/scripts
 # Copy jieba dictionary files
 COPY --from=builder /go/pkg/mod/github.com/yanyiwu/gojieba@v1.4.6/deps/cppjieba/dict /app/dict
@@ -195,10 +229,11 @@ RUN chown -R numind:numind /opt/numind && \
     chmod -R 775 /opt/numind && \
     chmod -R 775 /app/logs && \
     chmod -R 775 /app/temp && \
-    chmod +x /app/numind
+    chmod +x /app/numind /app/numind-sandboxd /app/numind-sandbox-reconcile
 
 # 验证二进制文件存在且可执行
 RUN ls -la /app/numind && \
+    ls -la /app/numind-sandboxd /app/numind-sandbox-reconcile /app/sandbox-artifacts.sha256 && \
     echo "✅ 运行阶段二进制文件验证成功"
 
 # 复制启动脚本（包含语义切分模型检查）- 必须在 USER 切换之前

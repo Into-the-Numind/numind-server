@@ -86,6 +86,25 @@ docker build \
 BUILD_DONE=$(date +%s)
 echo "Build took $((BUILD_DONE - START))s"
 
+emit_sandbox_artifact_checksums() {
+  [ "$TARGET" = "server" ] || return 0
+  local cid tmp_dir
+  cid="$(docker create "$IMG_SHA")"
+  tmp_dir="$(mktemp -d)"
+  cleanup_artifact_extract() {
+    docker rm -f "$cid" >/dev/null 2>&1 || true
+    rm -rf "$tmp_dir"
+    trap - RETURN
+  }
+  trap cleanup_artifact_extract RETURN
+  docker cp "$cid:/app/sandbox-artifacts.sha256" "$tmp_dir/sandbox-artifacts.sha256"
+  echo
+  echo "Sandbox artifacts SHA256:"
+  cat "$tmp_dir/sandbox-artifacts.sha256"
+}
+
+emit_sandbox_artifact_checksums
+
 # Push to TCR. CRITICAL: TCR may DENY a push (e.g. repo at its 100-tag limit,
 # "denied: ...tag has reached its limit(100)...") while `docker push` still
 # returns exit 0 — so a bare push slips past `set -euo pipefail` and the deploy
