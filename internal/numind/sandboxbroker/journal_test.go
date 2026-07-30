@@ -418,6 +418,53 @@ func TestJournalTransitionsHeartbeatAndAppendOnlyEvents(t *testing.T) {
 	}
 }
 
+func TestJournalActivateReplayKeepsOriginalServerDeadline(t *testing.T) {
+	journal := openTestJournal(t, testJournalPath(t))
+	now := time.Now().UTC().Truncate(time.Millisecond).Add(-time.Second)
+	params := testCreateParams("lease-1", "create-1", now)
+	if _, _, err := journal.CreateLease(context.Background(), params); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := journal.Transition(context.Background(), TransitionParams{
+		LeaseID: params.LeaseID, RequestID: "creating-1",
+		To: LeaseCreating, At: now.Add(100 * time.Millisecond),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	containerID := "container-1"
+	readyExpiry := time.Now().UTC().Add(10 * time.Minute)
+	if _, _, err := journal.Transition(context.Background(), TransitionParams{
+		LeaseID: params.LeaseID, RequestID: "ready-1",
+		To: LeaseReady, At: now.Add(200 * time.Millisecond),
+		ContainerID: &containerID, ExpiresAt: &readyExpiry,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	runID := uint64(7)
+	sessionID := uint64(9)
+	activate := TransitionParams{
+		LeaseID: params.LeaseID, RequestID: "activate-1",
+		To:         LeaseActive,
+		AgentRunID: &runID, SandboxSessionID: &sessionID,
+	}
+	first, replay, err := journal.Transition(context.Background(), activate)
+	if err != nil || replay {
+		t.Fatalf("first activate lease=%#v replay=%v err=%v", first, replay, err)
+	}
+	time.Sleep(2 * time.Millisecond)
+	second, replay, err := journal.Transition(context.Background(), activate)
+	if err != nil || !replay {
+		t.Fatalf("activate replay lease=%#v replay=%v err=%v", second, replay, err)
+	}
+	if !second.ExpiresAt.Equal(first.ExpiresAt) ||
+		!second.UpdatedAt.Equal(first.UpdatedAt) ||
+		second.AgentRunID != first.AgentRunID ||
+		second.SandboxSessionID != first.SandboxSessionID {
+		t.Fatalf("activate replay changed first result: first=%#v second=%#v", first, second)
+	}
+}
+
 func TestJournalRejectsIllegalTransitionsAndRequestReuse(t *testing.T) {
 	journal := openTestJournal(t, testJournalPath(t))
 	now := time.Now().UTC().Truncate(time.Millisecond)

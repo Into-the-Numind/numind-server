@@ -5,7 +5,7 @@ features:
   description: Run the Dev-proven Sandbox feature on the existing Prod host while isolating its Docker control plane, networks, secrets, mounts, and resource budget from customer-facing services and data.
   classification_reason: 'Standard: production host container-control security, a separate Sandbox runtime, build/deploy scripts, resource policy, and rollback verification span more than three files and are high risk.'
   last_updated_by: ai-s4-coding
-  last_updated_at: '2026-07-30T08:08:17+0800'
+  last_updated_at: '2026-07-30T08:12:09+0800'
   created_at: '2026-07-30T01:26:00+0800'
   track: standard
   stage: S4
@@ -46,6 +46,7 @@ features:
   - 'T1 review round 4 quality: FAIL with 0 P0, 1 P1, 0 P2; removed generic os.File copy-in acceptance because Close is not guaranteed to interrupt every blocking file descriptor.'
   - 'T1 review round 5: both independent reviews PASS with 0 P0, 0 P1, 0 P2 at commit 1209cc09.'
   - 'T2 review round 1: spec FAIL 0 P0/1 P1/0 P2 and quality FAIL 0 P0/3 P1/3 P2; active leases now have a non-extendable 300-second expiry, reasons are allowlisted codes, private DB/lock/WAL/SHM ownership and inode checks are enforced, schema invariants are stronger, and Close concurrency is covered before re-review.'
+  - 'T2 review round 2: both reviews FAIL with the same 0 P0/1 P1/0 P2 finding; activate replay now excludes the broker-generated absolute expiry from its logical request fingerprint and preserves the first 300-second deadline.'
   blockers: []
 - id: xhs-analytics-summary-tests
   ndf_version: '3.0'

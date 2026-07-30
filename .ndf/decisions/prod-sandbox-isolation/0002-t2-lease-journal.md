@@ -31,7 +31,10 @@ The journal is therefore a separate, content-free fact source owned only by the
    binding or container identity.
 7. Activation resets the absolute lease expiry to 300 seconds. Heartbeats
    cannot extend that deadline, and active leases become stale on either the
-   absolute deadline or the 30-second heartbeat deadline.
+   absolute deadline or the 30-second heartbeat deadline. Because this expiry
+   is broker-generated rather than caller input, activate idempotency compares
+   only the requested lease and run/session binding; retries return the first
+   absolute deadline.
 8. Use explicit legal transitions and separate state-specific stale cutoffs
    for expiry, heartbeat, and incomplete external actions.
 9. Bound every list query to at most 1,000 rows.

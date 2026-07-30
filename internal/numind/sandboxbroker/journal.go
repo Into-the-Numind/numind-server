@@ -907,6 +907,13 @@ func createLeaseFingerprint(params CreateLeaseParams) string {
 }
 
 func transitionFingerprint(params TransitionParams) string {
+	expiresAt := timePointerValue(params.ExpiresAt)
+	if params.To == LeaseActive {
+		// Activation expiry is a fixed broker result, not caller-supplied
+		// request semantics. Excluding it lets response-loss retries replay the
+		// first binding and its original absolute deadline.
+		expiresAt = nil
+	}
 	return operationFingerprint(
 		"transition",
 		params.LeaseID,
@@ -914,7 +921,7 @@ func transitionFingerprint(params TransitionParams) string {
 		uint64PointerValue(params.AgentRunID),
 		uint64PointerValue(params.SandboxSessionID),
 		stringPointerValue(params.ContainerID),
-		timePointerValue(params.ExpiresAt),
+		expiresAt,
 		terminationReasonPointerValue(params.TerminationReason),
 		stringPointerValue(params.ReconcileState),
 	)
