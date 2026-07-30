@@ -736,7 +736,7 @@ run_sandboxd_deploy() {
   NUMIND_SANDBOX_BROKER_INSTANCE=numind-prod-sandbox-primary \
   NUMIND_SANDBOX_API_HOST_UID=1001 \
   NUMIND_SANDBOX_IMAGE_DIGEST="ccr.ccs.tencentyun.com/youshunumind/sandbox-skill@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" \
-  NUMIND_SANDBOX_SECCOMP_SHA256="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" \
+  NUMIND_SANDBOX_SECCOMP_SHA256="sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" \
   NUMIND_SANDBOX_PARENT_MEMORY_MAX_BYTES=2952790016 \
   NUMIND_SANDBOX_WORKLOAD_MEMORY_MAX_BYTES=2415919104 \
   NUMIND_SANDBOX_WORKLOAD_MEMORY_HIGH_BYTES=2147483648 \

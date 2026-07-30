@@ -68,11 +68,11 @@ require_digest_env() {
   fi
 }
 
-require_hex64_env() {
+require_sha256_env() {
   local name="$1"
   local value="${!name:-}"
   [ -n "$value" ] || fail "$name is required"
-  [[ "$value" =~ ^[a-f0-9]{64}$ ]] || fail "$name must be 64 lowercase hex chars"
+  [[ "$value" =~ ^sha256:[a-f0-9]{64}$ ]] || fail "$name must be sha256:<64 lowercase hex chars>"
 }
 
 require_capacity_env() {
@@ -87,7 +87,7 @@ require_capacity_env() {
   require_numeric_env NUMIND_SANDBOX_API_HOST_UID
   require_numeric_env DOCKER_TASKS_MAX
   require_digest_env NUMIND_SANDBOX_IMAGE_DIGEST
-  require_hex64_env NUMIND_SANDBOX_SECCOMP_SHA256
+  require_sha256_env NUMIND_SANDBOX_SECCOMP_SHA256
   [ -n "${NUMIND_SANDBOX_BROKER_INSTANCE:-}" ] || fail "NUMIND_SANDBOX_BROKER_INSTANCE is required"
   [[ "$NUMIND_SANDBOX_BROKER_INSTANCE" =~ ^[A-Za-z0-9_.-]{3,64}$ ]] || fail "NUMIND_SANDBOX_BROKER_INSTANCE is invalid"
 }

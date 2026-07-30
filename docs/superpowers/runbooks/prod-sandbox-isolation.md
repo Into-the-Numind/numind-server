@@ -91,7 +91,7 @@ NUMIND_SANDBOX_BROKER_OWNER_ID=numind-user-api-primary
 NUMIND_SANDBOX_BROKER_INSTANCE=numind-prod-sandbox-primary
 NUMIND_SANDBOX_API_HOST_UID=1001
 NUMIND_SANDBOX_IMAGE_DIGEST=ccr.ccs.tencentyun.com/youshunumind/sandbox-skill@sha256:<64hex>
-NUMIND_SANDBOX_SECCOMP_SHA256=<64hex>
+NUMIND_SANDBOX_SECCOMP_SHA256=sha256:<64hex>
 ```
 
 以及 capacity 脚本输出的所有 `NUMIND_SANDBOX_*_BYTES` 值。
