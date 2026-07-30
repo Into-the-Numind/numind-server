@@ -57,14 +57,14 @@
 
 ### 3.3 当前代码必须补的构建差异
 
-`numind-web-v3/scripts/cicd/build-and-push.sh` 当前只会在 Dev/QA 编译通知中心和文档系统，Prod 仍为空值。上线前必须明确改为：
+`numind-web-v3/scripts/cicd/build-and-push.sh` 已改为在 Prod 编译通知中心和文档系统：
 
 - Prod：通知中心 `true`
 - Prod：文档系统 `true`
 - Prod：会议副驾不设置
 - Prod：说话人分离不设置
 
-否则“代码部署成功”后，正式用户仍看不到通知中心和文档入口。
+技能市场入口也已在用户端左侧菜单对父账户开放；子账户仍不显示配置中心/技能市场。
 
 ## 4. Prod 需要补的运行配置
 
@@ -75,6 +75,7 @@
 | 变量 | 用途 |
 | --- | --- |
 | `NUMIND_WEB_SEARCH_TAVILY_API_KEY` | AI 智能体联网搜索 |
+| `NUMIND_AGENT_ARTIFACT_DIR` | AI 智能体/文档系统生成的 docx/xlsx/pdf/pptx 等文件持久目录，建议 `/opt/numind/prod/agent-artifacts` |
 | `NUMIND_SECURITY_THIRDPARTY_TOKEN_KEY` | 飞书回执、游标和敏感边界的根密钥 |
 | `NUMIND_FEISHU_KEYRING` | 飞书工作空间加密 Keyring；单行严格 JSON |
 | `NUMIND_FEISHU_KEY_VERSION` | 当前飞书加密版本，例如 `v1` |
@@ -233,4 +234,3 @@ Prod 是“部分结构已经被 AutoMigrate 补过、部分表又缺失”的�
 4. Sandbox 同机隔离完成并在 Dev/同形态环境验证。
 5. Dev 全功能产品验收完成。
 6. 产品负责人单独明确授权“现在部署 Prod”。
-
