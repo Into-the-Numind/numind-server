@@ -1388,6 +1388,11 @@ func (s *Server) handleFiles(
 	peer PeerCredentials,
 	leaseID string,
 ) {
+	copyContext, cancelCopy := context.WithTimeout(
+		request.Context(),
+		RuntimeSessionTimeout,
+	)
+	defer cancelCopy()
 	path, ok := exactQueryValue(request.URL.Query(), "path")
 	if !ok || path == "" {
 		s.writeError(writer, request, ErrRPCProtocol)
@@ -1400,6 +1405,13 @@ func (s *Server) handleFiles(
 	}
 	switch request.Method {
 	case http.MethodPut:
+		mediaType, _, err := mime.ParseMediaType(
+			request.Header.Get("Content-Type"),
+		)
+		if err != nil || mediaType != "application/octet-stream" {
+			s.writeError(writer, request, ErrRPCProtocol)
+			return
+		}
 		release, err := s.copies.acquire(leaseID, CopyInDirection)
 		if err != nil {
 			s.writeError(writer, request, err)
@@ -1412,12 +1424,12 @@ func (s *Server) handleFiles(
 			DefaultCopyOutLimits().MaxSingleBytes,
 		)
 		err = s.service.CopyIn(
-			request.Context(),
+			copyContext,
 			peer,
 			leaseID,
 			path,
 			requestID,
-			s.copies.reader(request.Context(), request.Body),
+			s.copies.reader(copyContext, request.Body),
 		)
 		s.writeNoContent(writer, request, err)
 	case http.MethodGet:
@@ -1428,7 +1440,7 @@ func (s *Server) handleFiles(
 		}
 		defer release()
 		source, err := s.service.CopyOut(
-			request.Context(),
+			copyContext,
 			peer,
 			leaseID,
 			path,
@@ -1442,13 +1454,12 @@ func (s *Server) handleFiles(
 		writer.Header().Set("Content-Type", "application/x-tar")
 		writer.WriteHeader(http.StatusOK)
 		buffer := make([]byte, ServerCopyBufferBytes)
-		destination := &maxBytesWriter{
-			dst:      s.copies.writer(request.Context(), writer),
-			remain:   DefaultCopyOutLimits().MaxTotalBytes + (2 << 20),
-			limitErr: ErrStreamOutputTooLarge,
-		}
 		_, _ = io.CopyBuffer(
-			destination,
+			&maxBytesWriter{
+				dst:      s.copies.writer(copyContext, writer),
+				remain:   DefaultCopyOutLimits().MaxTotalBytes + (2 << 20),
+				limitErr: ErrStreamOutputTooLarge,
+			},
 			source,
 			buffer,
 		)
@@ -1598,6 +1609,8 @@ func rpcErrorContract(err error) (int, string) {
 		errors.Is(err, ErrInvalidTransition),
 		errors.Is(err, ErrRPCProtocol):
 		return http.StatusBadRequest, "policy_denied"
+	case errors.Is(err, ErrIdempotencyConflict):
+		return http.StatusConflict, "protocol_error"
 	case errors.Is(err, ErrStreamInputTooLarge):
 		return http.StatusRequestEntityTooLarge, "input_too_large"
 	case errors.As(err, &maxBytesError):

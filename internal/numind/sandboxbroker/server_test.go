@@ -498,8 +498,12 @@ func newPeerRequest(
 ) *http.Request {
 	t.Helper()
 	request := httptest.NewRequest(method, path, bytes.NewBufferString(body))
-	if body != "" && method != http.MethodPut {
-		request.Header.Set("Content-Type", "application/json")
+	if body != "" {
+		if method == http.MethodPut {
+			request.Header.Set("Content-Type", "application/octet-stream")
+		} else {
+			request.Header.Set("Content-Type", "application/json")
+		}
 	}
 	if requestID != "" {
 		request.Header.Set("X-Numind-Request-ID", requestID)
