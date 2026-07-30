@@ -1,5 +1,28 @@
 schema_version: '2.0'
 features:
+- id: hide-skill-market-tab
+  ndf_version: '3.0'
+  description: Hide the user frontend Skill Marketplace sidebar tab for both parent accounts and child accounts while leaving routes and backend permissions unchanged.
+  classification_reason: 'Hotfix: frontend-only navigation visibility change, no DB schema, no new API endpoint, no external integration, and two frontend files.'
+  last_updated_by: ai-h3-dev-verified
+  last_updated_at: '2026-07-30T23:32:48+0800'
+  last_verified: '2026-07-30T23:32:48+0800'
+  created_at: '2026-07-30T23:13:47+0800'
+  track: hotfix
+  stage: H3
+  status: active
+  repos: [numind-web-v3]
+  branches: {numind-web-v3: develop}
+  worktrees: {numind-web-v3: /Users/zhiyuchen/Documents/10_跃迁有数/有数AI工作台/莫小派/Codes/numind-web-v3}
+  progress: {total_tasks: 2, completed_tasks: 2, reviewed_tasks: 0, current_task: 'Merged to develop, pushed, deployed to Dev, and verified with a parent account; human quick acceptance/prod tag pending if needed'}
+  deployed: 'dev web develop-58b5ee7 (registry digest sha256:346a1ab712c348cdcc7352d3ac1661ba9c9d1d71fd01bae14f3747cc4344ea77); public /health returned healthy'
+  artifacts:
+    h2_h3_verification: .ndf/decisions/hide-skill-market-tab/0001-h2-h3-verification.md
+  decisions:
+  - 'Keep marketplace routes and backend parent-only guards intact; hide only the sidebar tab entry.'
+  - 'RED commit 4de02a4 reproduces the parent-account sidebar showing 技能市场; fix commit 32b1ae8 turns the entry off.'
+  - 'H3: numind-web-v3 develop 58b5ee7 deployed to Dev and verified with a real parent E2E account; sidebar marketplaceCount=0.'
+  blockers: []
 - id: prod-schema-dev-compat
   ndf_version: '3.0'
   description: Make the reviewed Prod schema reconcile package accept the real Dev historical schema without rewriting any existing customer, credit, attachment, Agent, or Feishu business row.
