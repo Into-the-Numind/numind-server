@@ -4,9 +4,9 @@ features:
   ndf_version: '3.0'
   description: Add minimum protocol cards, structured model-input errors, and same-error stop-loss for the registered Lark companion tools.
   classification_reason: 'Hotfix: backend-only Agent tool contract hardening for currently registered Feishu companion tools, no DB schema, no new API endpoint, no new external integration, and three agent files.'
-  last_updated_by: ai-h3-dev-verified
-  last_updated_at: '2026-07-31T16:16:21+0800'
-  last_verified: '2026-07-31T16:16:21+0800'
+  last_updated_by: ai-h3-prod-deployed
+  last_updated_at: '2026-07-31T16:37:16+0800'
+  last_verified: '2026-07-31T16:37:16+0800'
   created_at: '2026-07-31T15:49:43+0800'
   track: hotfix
   stage: H3
@@ -14,11 +14,12 @@ features:
   repos: [numind-server]
   branches: {numind-server: fix/lark-tool-input-protocol}
   worktrees: {numind-server: /private/tmp/wt-lark-tool-input-protocol-numind-server}
-  progress: {total_tasks: 3, completed_tasks: 3, reviewed_tasks: 0, current_task: 'Merged to develop, pushed, deployed to Dev, and external health verified'}
-  deployed: 'dev server develop-c8f8dbbb (registry digest sha256:c72ed8d077eb716c92a8dc9b39de1805d2294425c079c7cfe5b32d34e9bf1aaa); public /health returned healthy'
+  progress: {total_tasks: 3, completed_tasks: 3, reviewed_tasks: 0, current_task: 'Merged to develop, pushed, deployed to Dev and Prod, and health verified'}
+  deployed: 'dev server develop-c8f8dbbb (registry digest sha256:c72ed8d077eb716c92a8dc9b39de1805d2294425c079c7cfe5b32d34e9bf1aaa); prod server v2.1.75-9efd1a7d (registry digest sha256:0c667deab41e97c42bb694b0a6ceb208452df31732805368c2001d3806512d4a); health checks passed'
   artifacts:
     h1_verification: .ndf/decisions/lark-tool-input-protocol/0001-h1-verification.md
     h3_dev_deployment: .ndf/decisions/lark-tool-input-protocol/0002-h3-dev-deployment.md
+    h3_prod_deployment: .ndf/decisions/lark-tool-input-protocol/0003-h3-prod-deployment.md
   decisions:
   - 'Only currently registered Lark tools are in scope: lark_skill_read and lark_inspect. Retired legacy tools stay unregistered and untouched.'
   - 'Keep lark_connect unchanged because its schema is the empty object and it has no ambiguous command payload.'
@@ -26,6 +27,7 @@ features:
   - 'Preserve safe Langfuse spans for invalid lark_skill_read inputs without logging raw skill or reference values.'
   - 'H2: focused protocol tests, agent package tests, go test ./..., and task lint all pass.'
   - 'H3: numind-server develop c8f8dbbb deployed to Dev as develop-c8f8dbbb and external health passed.'
+  - 'H3-prod: with explicit user approval, production release v2.1.75 deployed image ccr.ccs.tencentyun.com/youshunumind/numind-server:v2.1.75-9efd1a7d. Prod container, localhost health, and public https://youshu.asia/api/healthz all returned healthy.'
   blockers: []
 - id: lark-execute-bplus
   ndf_version: '3.0'
