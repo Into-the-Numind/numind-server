@@ -38,9 +38,9 @@ type stepCollector struct {
 	dropped int
 }
 
-// maxSteps caps entries for a pathological runaway loop. Eino MaxStep is 120
+// maxSteps caps entries for a pathological runaway loop. Eino MaxStep is 360
 // (runner_runstream.go); this cap sits above it to absorb any future bump.
-const maxSteps = 200
+const maxSteps = 400
 
 // maxStepReasoningRunes soft-caps a single step's reasoning so the persisted
 // messages JSON can't blow up on a verbose thinking model. Content (the actual

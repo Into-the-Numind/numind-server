@@ -197,11 +197,11 @@ func TestRegistry_Get_Success(t *testing.T) {
 }
 
 // TestNewRegistry_ManifestFailsValidation_SkipsDir verifies that a manifest with
-// max_runtime_seconds > 60 is skipped.
+// max_runtime_seconds > 180 is skipped.
 func TestNewRegistry_ManifestFailsValidation_SkipsDir(t *testing.T) {
 	root := t.TempDir()
 	bad := validManifest("too-long")
-	bad["max_runtime_seconds"] = 120 // violates ≤60 constraint
+	bad["max_runtime_seconds"] = 181 // violates ≤180 constraint
 	writeManifest(t, root, "too-long", bad)
 	writeManifest(t, root, "good", validManifest("good"))
 

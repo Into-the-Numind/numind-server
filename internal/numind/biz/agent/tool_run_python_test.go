@@ -236,8 +236,8 @@ func TestRunPythonTool_Execute_PoolExhausted(t *testing.T) {
 	}
 }
 
-// TestRunPythonTool_Execute_TimeoutClamp verifies that timeout_seconds > 120
-// is silently clamped to 120.
+// TestRunPythonTool_Execute_TimeoutClamp verifies that timeout_seconds > 180
+// is silently clamped to 180.
 func TestRunPythonTool_Execute_TimeoutClamp(t *testing.T) {
 	mockDC := sandbox.NewMockDockerClient()
 	containerID, _ := mockDC.Spawn(context.Background(), sandbox.SpawnConfig{ImageTag: "test"})
@@ -247,8 +247,8 @@ func TestRunPythonTool_Execute_TimeoutClamp(t *testing.T) {
 		BorrowedAt:  time.Now(),
 	}
 
-	// Register the python exec result using the CLAMPED timeout (120s)
-	mockDC.RegisterExecResult(containerID, []string{"/bin/sh", "-c", "timeout 120s python3 /workdir/run.py"},
+	// Register the python exec result using the CLAMPED timeout (180s)
+	mockDC.RegisterExecResult(containerID, []string{"/bin/sh", "-c", "timeout 180s python3 /workdir/run.py"},
 		sandbox.ExecResult{Stdout: "", Stderr: "", ExitCode: 0, Duration: 1 * time.Millisecond})
 	mockDC.RegisterExecResult(containerID, []string{"/bin/sh", "-c", "ls /workdir/output/ 2>/dev/null || true"},
 		sandbox.ExecResult{Stdout: "", Stderr: "", ExitCode: 0})
@@ -258,7 +258,7 @@ func TestRunPythonTool_Execute_TimeoutClamp(t *testing.T) {
 
 	in := map[string]interface{}{
 		"code":            "pass",
-		"timeout_seconds": 200, // should be clamped to 120
+		"timeout_seconds": 200, // should be clamped to 180
 	}
 	raw, _ := json.Marshal(in)
 	res, err := tool.Execute(ctx, raw)

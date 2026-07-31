@@ -25,8 +25,11 @@ func TestDefaultSandboxConfig_Defaults(t *testing.T) {
 	if cfg.PIDsLimit != 64 {
 		t.Errorf("default PIDsLimit = %d; want 64", cfg.PIDsLimit)
 	}
-	if cfg.Timeout != 30*time.Second {
-		t.Errorf("default Timeout = %v; want 30s", cfg.Timeout)
+	if cfg.Timeout != 180*time.Second {
+		t.Errorf("default Timeout = %v; want 180s", cfg.Timeout)
+	}
+	if cfg.SessionTimeout != 600*time.Second {
+		t.Errorf("default SessionTimeout = %v; want 600s", cfg.SessionTimeout)
 	}
 	if cfg.NetworkPolicy != NetworkPolicyNone {
 		t.Errorf("default NetworkPolicy = %q; want %q", cfg.NetworkPolicy, NetworkPolicyNone)
