@@ -9,6 +9,7 @@ import (
 	"io"
 	"slices"
 	"strings"
+	"sync"
 
 	"numind-server/internal/numind/biz/feishu"
 )
@@ -29,6 +30,7 @@ func (t *larkSkillReadTool) Name() string { return "lark_skill_read" }
 func (t *larkSkillReadTool) Description() string {
 	return "Read complete instructions from only the five official embedded lark-cli skills (lark-shared, " +
 		"lark-doc, lark-base, lark-wiki, lark-drive). Select the skill and an optional controlled reference; " +
+		`Minimum valid examples, not the full Lark guide: {"skill":"lark-doc"} or {"skill":"lark-base","reference":"lark-base-record-batch-create.md"}. ` +
 		"the platform handles pagination. No raw path, user identity, connection, or credential is accepted."
 }
 func (t *larkSkillReadTool) UserFacingName() string { return "读取飞书技能" }
@@ -86,21 +88,14 @@ func (t *larkSkillReadTool) Execute(ctx context.Context, input ToolInput) (ToolR
 		return larkWorkspaceSoftError(larkWorkspaceErrorUnavailable)
 	}
 
-	fields, err := decodeStrictLarkToolObject(input, "skill", "reference", "cursor")
+	runID := RunIDFromContext(ctx)
+	request, err := decodeLarkSkillReadInput(input, runID)
 	if err != nil {
-		return larkWorkspaceSoftError(larkWorkspaceErrorInvalidSkillInput)
+		code, message, hint, fix := larkSkillReadInputProtocolSpec(err)
+		recordLarkSkillReadInvalidInputSpan(ctx, runID, code)
+		return larkWorkspaceToolInputProtocolError(runID, t.Name(), code, message, hint, fix)
 	}
-	var request feishu.SkillReadRequest
-	request.AgentRunID = RunIDFromContext(ctx)
-	if err := decodeRequiredNonEmptyString(fields, "skill", &request.Skill); err != nil {
-		return larkWorkspaceSoftError(larkWorkspaceErrorInvalidSkillInput)
-	}
-	if err := decodeOptionalString(fields, "reference", &request.Reference); err != nil {
-		return larkWorkspaceSoftError(larkWorkspaceErrorInvalidSkillInput)
-	}
-	if err := decodeOptionalString(fields, "cursor", &request.Cursor); err != nil {
-		return larkWorkspaceSoftError(larkWorkspaceErrorInvalidSkillInput)
-	}
+	larkToolInputProtocolClearRun(runID)
 	var span *safePipelineToolSpan
 	spanOutput := map[string]any{
 		"ok":            false,
@@ -188,6 +183,63 @@ func (t *larkSkillReadTool) Execute(ctx context.Context, input ToolInput) (ToolR
 	return larkWorkspaceSoftError(larkWorkspaceErrorSkillRead)
 }
 
+var (
+	errLarkSkillReadMissingSkill = errors.New("skill missing")
+	errLarkSkillReadInvalidSkill = errors.New("skill invalid")
+)
+
+func decodeLarkSkillReadInput(input ToolInput, runID uint64) (feishu.SkillReadRequest, error) {
+	fields, err := decodeStrictLarkToolObject(input, "skill", "reference", "cursor")
+	if err != nil {
+		return feishu.SkillReadRequest{}, errLarkSkillReadInvalidSkill
+	}
+	var request feishu.SkillReadRequest
+	request.AgentRunID = runID
+	if _, ok := fields["skill"]; !ok {
+		return feishu.SkillReadRequest{}, errLarkSkillReadMissingSkill
+	}
+	if err := decodeRequiredNonEmptyString(fields, "skill", &request.Skill); err != nil {
+		return feishu.SkillReadRequest{}, errLarkSkillReadInvalidSkill
+	}
+	if !slices.Contains([]string{"lark-shared", "lark-doc", "lark-base", "lark-wiki", "lark-drive"}, request.Skill) {
+		return feishu.SkillReadRequest{}, errLarkSkillReadInvalidSkill
+	}
+	if err := decodeOptionalString(fields, "reference", &request.Reference); err != nil {
+		return feishu.SkillReadRequest{}, errLarkSkillReadInvalidSkill
+	}
+	if err := decodeOptionalString(fields, "cursor", &request.Cursor); err != nil {
+		return feishu.SkillReadRequest{}, errLarkSkillReadInvalidSkill
+	}
+	return request, nil
+}
+
+func larkSkillReadInputProtocolSpec(err error) (code, message, hint, fix string) {
+	fix = "lark_skill_read 的 skill/reference 工具参数"
+	if errors.Is(err, errLarkSkillReadMissingSkill) {
+		return "missing_skill",
+			"lark_skill_read 缺少 skill；失败发生在大模型到后端的工具参数层，不是飞书端失败。下一次必须传 skill，例如 {\"skill\":\"lark-doc\"}。可选 skill：lark-shared、lark-doc、lark-base、lark-wiki、lark-drive。",
+			"lark_skill_read 缺少 skill",
+			fix
+	}
+	return "invalid_skill_input",
+		"lark_skill_read 参数无效；失败发生在大模型到后端的工具参数层，不是飞书端失败。必须传 skill，reference 必须来自该技能返回的 references。",
+		"lark_skill_read 参数无效",
+		fix
+}
+
+func recordLarkSkillReadInvalidInputSpan(ctx context.Context, runID uint64, errorClass string) {
+	span := startSafePipelineToolSpan(ctx, "tool.lark_skill_read.execute", map[string]any{
+		"run_id":              runID,
+		"skill":               "invalid",
+		"requested_reference": "invalid",
+	})
+	span.End(map[string]any{
+		"ok":            false,
+		"resolved_path": "",
+		"page_count":    0,
+	}, errorClass)
+}
+
 type larkWorkspaceErrorCode uint8
 
 const (
@@ -269,6 +321,105 @@ func larkWorkspaceSoftError(code larkWorkspaceErrorCode) (ToolResult, error) {
 		"code":        publicCode,
 		"recoverable": recoverable,
 		"retryable":   retryable,
+	})
+	return ToolResult(output), nil
+}
+
+type larkToolInputProtocolState struct {
+	mu       sync.Mutex
+	failures map[string]uint8
+}
+
+var larkToolInputProtocolRuns sync.Map // map[uint64]*larkToolInputProtocolState
+
+func larkToolInputProtocolClearRun(runID uint64) {
+	if runID != 0 {
+		larkToolInputProtocolRuns.Delete(runID)
+	}
+}
+
+func larkToolInputProtocolRejected(runID uint64, toolName, code string) (sameErrorAttempts, remaining int, exhausted bool) {
+	if runID == 0 {
+		return larkExecuteMaxSameInputProtocolAttempts, 0, true
+	}
+	value, _ := larkToolInputProtocolRuns.LoadOrStore(runID, &larkToolInputProtocolState{})
+	state := value.(*larkToolInputProtocolState)
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.failures == nil {
+		state.failures = make(map[string]uint8)
+	}
+	key := toolName + "\x00" + code
+	state.failures[key]++
+	sameErrorAttempts = int(state.failures[key])
+	remaining = larkExecuteMaxSameInputProtocolAttempts - sameErrorAttempts
+	if remaining < 0 {
+		remaining = 0
+	}
+	return sameErrorAttempts, remaining, sameErrorAttempts >= larkExecuteMaxSameInputProtocolAttempts
+}
+
+func larkWorkspaceToolInputProtocolError(
+	runID uint64,
+	toolName, code, message, hint, fix string,
+) (ToolResult, error) {
+	if code == "" {
+		code = "invalid_tool_input"
+	}
+	if message == "" {
+		message = toolName + " 参数无效；失败发生在大模型到后端的工具参数层，不是飞书端失败。"
+	}
+	sameErrorAttempts, remaining, exhausted := larkToolInputProtocolRejected(runID, toolName, code)
+	if exhausted {
+		return larkWorkspaceToolInputProtocolExhausted(code, hint, fix, sameErrorAttempts, remaining)
+	}
+	output, _ := json.Marshal(map[string]any{
+		"error":                   "ERROR: " + message,
+		"code":                    code,
+		"category":                "input_protocol",
+		"layer":                   "model_to_backend",
+		"stage":                   "pre_execution",
+		"attempt":                 sameErrorAttempts,
+		"max_attempts":            larkExecuteMaxSameInputProtocolAttempts,
+		"same_error_attempt":      sameErrorAttempts,
+		"same_error_max_attempts": larkExecuteMaxSameInputProtocolAttempts,
+		"remaining_attempts":      remaining,
+		"feishu_called":           false,
+		"recoverable":             true,
+		"retryable":               false,
+	})
+	return ToolResult(output), nil
+}
+
+func larkWorkspaceToolInputProtocolExhausted(
+	code, hint, fix string,
+	sameErrorAttempts, remaining int,
+) (ToolResult, error) {
+	message := "连续工具参数错误，已停止当前任务后续的飞书辅助工具调用。失败发生在大模型到后端的工具参数层，尚未调用飞书。"
+	if code != "" {
+		message += "错误类型：" + code + "。"
+	}
+	if hint != "" {
+		message += "最后一次校验原因：" + hint + "。"
+	}
+	if fix == "" {
+		fix = "当前飞书工具参数"
+	}
+	message += "不要猜测标题、内容长度、飞书权限、连接状态或限流；只修正 " + fix + "。"
+	output, _ := json.Marshal(map[string]any{
+		"error":                   "ERROR: " + message,
+		"code":                    "input_protocol_exhausted",
+		"category":                "input_protocol",
+		"layer":                   "model_to_backend",
+		"stage":                   "pre_execution",
+		"attempt":                 sameErrorAttempts,
+		"max_attempts":            larkExecuteMaxSameInputProtocolAttempts,
+		"same_error_attempt":      sameErrorAttempts,
+		"same_error_max_attempts": larkExecuteMaxSameInputProtocolAttempts,
+		"remaining_attempts":      remaining,
+		"feishu_called":           false,
+		"recoverable":             false,
+		"retryable":               false,
 	})
 	return ToolResult(output), nil
 }

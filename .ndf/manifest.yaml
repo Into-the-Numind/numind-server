@@ -1,5 +1,29 @@
 schema_version: '2.0'
 features:
+- id: lark-tool-input-protocol
+  ndf_version: '3.0'
+  description: Add minimum protocol cards, structured model-input errors, and same-error stop-loss for the registered Lark companion tools.
+  classification_reason: 'Hotfix: backend-only Agent tool contract hardening for currently registered Feishu companion tools, no DB schema, no new API endpoint, no new external integration, and three agent files.'
+  last_updated_by: ai-h2-verified
+  last_updated_at: '2026-07-31T16:04:21+0800'
+  last_verified: '2026-07-31T16:04:21+0800'
+  created_at: '2026-07-31T15:49:43+0800'
+  track: hotfix
+  stage: H2
+  status: active
+  repos: [numind-server]
+  branches: {numind-server: fix/lark-tool-input-protocol}
+  worktrees: {numind-server: /private/tmp/wt-lark-tool-input-protocol-numind-server}
+  progress: {total_tasks: 3, completed_tasks: 3, reviewed_tasks: 0, current_task: 'H2 verification passed; ready for ndf-done merge to develop and Dev redeploy'}
+  artifacts:
+    h1_verification: .ndf/decisions/lark-tool-input-protocol/0001-h1-verification.md
+  decisions:
+  - 'Only currently registered Lark tools are in scope: lark_skill_read and lark_inspect. Retired legacy tools stay unregistered and untouched.'
+  - 'Keep lark_connect unchanged because its schema is the empty object and it has no ambiguous command payload.'
+  - 'Describe examples as minimum valid examples, not complete Feishu guides.'
+  - 'Preserve safe Langfuse spans for invalid lark_skill_read inputs without logging raw skill or reference values.'
+  - 'H2: focused protocol tests, agent package tests, go test ./..., and task lint all pass.'
+  blockers: []
 - id: lark-execute-bplus
   ndf_version: '3.0'
   description: Add a minimal lark_execute protocol card, structured model-input errors, and same-error stop-loss for repeated missing argv tool calls.
