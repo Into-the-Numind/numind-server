@@ -1,5 +1,27 @@
 schema_version: '2.0'
 features:
+- id: agent-thinking-overflow
+  ndf_version: '3.0'
+  description: Keep long Agent deep-thinking/reasoning blocks visibly following newly streamed content instead of clipping below the panel.
+  classification_reason: 'Hotfix: frontend-only Agent UI overflow fix, no DB schema, no new API endpoint, no new external integration, and two frontend files.'
+  last_updated_by: ai-h3-merged
+  last_updated_at: '2026-07-31T19:32:06+0800'
+  last_verified: '2026-07-31T19:32:06+0800'
+  created_at: '2026-07-31T19:21:14+0800'
+  track: hotfix
+  stage: H3
+  status: active
+  repos: [numind-web-v3]
+  branches: {numind-web-v3: develop}
+  worktrees: {numind-web-v3: /Users/zhiyuchen/Documents/10_跃迁有数/有数AI工作台/莫小派/Codes/numind-web-v3}
+  progress: {total_tasks: 2, completed_tasks: 2, reviewed_tasks: 0, current_task: 'Merged to numind-web-v3 develop at 340c772 and pushed; dev deployment plus human quick acceptance pending if needed'}
+  artifacts:
+    h1_h2_verification: .ndf/decisions/agent-thinking-overflow/0001-h1-h2-verification.md
+  decisions:
+  - 'RED Playwright commit 51887ca reproduces the long live reasoning panel clipping its newest tail: clientHeight=4000, scrollHeight=5051, scrollTop=0, tailClipped=true.'
+  - 'Fix commit 89794f7 scopes a scrollable, auto-following thinking viewport to Agent-mode ThinkingBlock usage via autoCollapse=true, leaving sales/chatbot expanded thinking layout unchanged.'
+  - 'H2: npm run lint && npm run type-check pass; mocked Agent streaming E2E passes with 10 passed and 1 existing known-flaky skip; focused long reasoning regression reports tailClipped=false.'
+  blockers: []
 - id: lark-tool-input-protocol
   ndf_version: '3.0'
   description: Add minimum protocol cards, structured model-input errors, and same-error stop-loss for the registered Lark companion tools.
