@@ -23,7 +23,7 @@ func buildDiskRegistry(t *testing.T, name, desc, skillMD string) skills.Registry
 	dir := filepath.Join(root, name)
 	require.NoError(t, os.MkdirAll(dir, 0o755))
 	manifest := map[string]any{
-		"name": name, "version": "1.0.0", "description": desc, "max_runtime_seconds": 30,
+		"name": name, "version": "1.0.0", "description": desc, "max_runtime_seconds": 180,
 	}
 	data, err := json.Marshal(manifest)
 	require.NoError(t, err)

@@ -57,7 +57,7 @@ Every run_python call runs in a BRAND-NEW, ISOLATED sandbox that is DESTROYED wh
   - NEVER reopen a path you wrote in a previous call, e.g. Presentation("/workdir/output/foo.pptx") will FAIL because that file no longer exists — always build fresh with Presentation() / Workbook() / Document() and save once at the end.
   - To use a file you generated earlier (or a user upload) as INPUT, pass its COS URL in input_files; it is downloaded to /workdir/input/<filename> for this call only.
 
-PATHS: input_files mount read-only at /workdir/input/<filename>. Write outputs to /workdir/output/. Timeout: 30s default (max 180s). Limits: 512MB RAM, 1 CPU. Returns a COS URL for each file written to /workdir/output/.`
+PATHS: input_files mount read-only at /workdir/input/<filename>. Write outputs to /workdir/output/. Timeout: 180s default (max 180s). Limits: 512MB RAM, 1 CPU. Returns a COS URL for each file written to /workdir/output/.`
 }
 
 func (t *runPythonTool) UserFacingName() string        { return "Python 代码执行（文件生成）" }
@@ -90,7 +90,7 @@ func (t *runPythonTool) InputSchema() json.RawMessage {
 				"type": "integer",
 				"minimum": 1,
 				"maximum": 180,
-				"default": 30,
+				"default": 180,
 				"description": "Execution timeout in seconds (max 180)."
 			}
 		},
@@ -112,7 +112,7 @@ type runPythonInput struct {
 	// Expected filenames under /workdir/output/. If empty, collect all files.
 	ExpectedOutputFiles []string `json:"expected_output_files,omitempty"`
 
-	// Timeout in seconds; 0 = default 30s; max 180s.
+	// Timeout in seconds; 0 = default 180s; max 180s.
 	TimeoutSeconds int `json:"timeout_seconds,omitempty"`
 }
 
@@ -139,7 +139,7 @@ type runPythonFileResult struct {
 // ===========================================================================
 
 const (
-	runPythonDefaultTimeoutSecs = 30
+	runPythonDefaultTimeoutSecs = 180
 	runPythonMaxTimeoutSecs     = 180
 	runPythonMaxInputFiles      = 5
 	runPythonMaxOutputFiles     = 20

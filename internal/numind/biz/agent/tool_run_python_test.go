@@ -286,15 +286,15 @@ func TestRunPythonTool_Execute_TimeoutDefault(t *testing.T) {
 		BorrowedAt:  time.Now(),
 	}
 
-	// Register using DEFAULT timeout (30s)
-	mockDC.RegisterExecResult(containerID, []string{"/bin/sh", "-c", "timeout 30s python3 /workdir/run.py"},
+	// Register using DEFAULT timeout (180s)
+	mockDC.RegisterExecResult(containerID, []string{"/bin/sh", "-c", "timeout 180s python3 /workdir/run.py"},
 		sandbox.ExecResult{Stdout: "ok", Stderr: "", ExitCode: 0, Duration: 1 * time.Millisecond})
 	mockDC.RegisterExecResult(containerID, []string{"/bin/sh", "-c", "ls /workdir/output/ 2>/dev/null || true"},
 		sandbox.ExecResult{Stdout: "", Stderr: "", ExitCode: 0})
 
 	ctx := wiredRunPythonCtx(t, mockDC, sess)
 	tool := &runPythonTool{}
-	// timeout_seconds = 0 → default 30
+	// timeout_seconds = 0 → default 180
 	res, err := tool.Execute(ctx, []byte(`{"code":"pass","timeout_seconds":0}`))
 	if err != nil {
 		t.Fatalf("Execute returned error: %v", err)
@@ -320,7 +320,7 @@ func TestRunPythonTool_Execute_PythonRuntimeError(t *testing.T) {
 		BorrowedAt:  time.Now(),
 	}
 
-	mockDC.RegisterExecResult(containerID, []string{"/bin/sh", "-c", "timeout 30s python3 /workdir/run.py"},
+	mockDC.RegisterExecResult(containerID, []string{"/bin/sh", "-c", "timeout 180s python3 /workdir/run.py"},
 		sandbox.ExecResult{
 			Stdout:   "",
 			Stderr:   "SyntaxError: invalid syntax",
@@ -367,7 +367,7 @@ func TestRunPythonTool_Execute_NoOutputFiles(t *testing.T) {
 		BorrowedAt:  time.Now(),
 	}
 
-	mockDC.RegisterExecResult(containerID, []string{"/bin/sh", "-c", "timeout 30s python3 /workdir/run.py"},
+	mockDC.RegisterExecResult(containerID, []string{"/bin/sh", "-c", "timeout 180s python3 /workdir/run.py"},
 		sandbox.ExecResult{Stdout: "done", Stderr: "", ExitCode: 0, Duration: 1 * time.Millisecond})
 	mockDC.RegisterExecResult(containerID, []string{"/bin/sh", "-c", "ls /workdir/output/ 2>/dev/null || true"},
 		sandbox.ExecResult{Stdout: "", Stderr: "", ExitCode: 0})
@@ -405,7 +405,7 @@ func TestRunPythonTool_Execute_StdoutTruncated(t *testing.T) {
 	}
 
 	longStdout := strings.Repeat("A", 5000)
-	mockDC.RegisterExecResult(containerID, []string{"/bin/sh", "-c", "timeout 30s python3 /workdir/run.py"},
+	mockDC.RegisterExecResult(containerID, []string{"/bin/sh", "-c", "timeout 180s python3 /workdir/run.py"},
 		sandbox.ExecResult{Stdout: longStdout, Stderr: "", ExitCode: 0, Duration: 1 * time.Millisecond})
 	mockDC.RegisterExecResult(containerID, []string{"/bin/sh", "-c", "ls /workdir/output/ 2>/dev/null || true"},
 		sandbox.ExecResult{Stdout: "", Stderr: "", ExitCode: 0})

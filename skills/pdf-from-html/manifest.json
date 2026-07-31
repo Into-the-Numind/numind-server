@@ -11,7 +11,7 @@
   "output_mime_types": [
     "application/pdf"
   ],
-  "max_runtime_seconds": 30,
+  "max_runtime_seconds": 180,
   "max_output_size_mb": 50,
   "input_dir": "/workspace/input",
   "output_dir": "/output",

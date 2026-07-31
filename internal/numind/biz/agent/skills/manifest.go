@@ -27,7 +27,7 @@ var ErrSkillNotFound = errors.New("skill not found")
 //	  "categories": ["spreadsheet", "data"],
 //	  "required_libs": ["openpyxl>=3.1", "pandas>=2.0"],
 //	  "output_mime_types": ["application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"],
-//	  "max_runtime_seconds": 30,
+//	  "max_runtime_seconds": 180,
 //	  "max_output_size_mb": 50,
 //	  "input_dir": "/workdir/input/",
 //	  "output_dir": "/workdir/output/"
@@ -57,7 +57,7 @@ type SkillManifest struct {
 	OutputMimeTypes []string `json:"output_mime_types"`
 
 	// MaxRuntimeSeconds is the sandbox timeout for this skill's Python execution.
-	// Must be ≤ 180. Default is 30 when zero.
+	// Must be ≤ 180. Default is 180 when zero.
 	MaxRuntimeSeconds int `json:"max_runtime_seconds"`
 
 	// MaxOutputSizeMB is the size cap (in MiB) for a single output file.
@@ -102,7 +102,7 @@ func (m *SkillManifest) Validate() error {
 // defaults when the manifest value is zero or negative.
 func (m *SkillManifest) EffectiveMaxRuntime() int {
 	if m.MaxRuntimeSeconds <= 0 {
-		return 30
+		return 180
 	}
 	return m.MaxRuntimeSeconds
 }
