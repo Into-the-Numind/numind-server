@@ -38,8 +38,8 @@ type Snapshot struct {
 // The per-session credit cap was removed (2026-06-17 agent-credit-cap-redesign);
 // only turns / wall-time / daily-credits remain.
 type Limits struct {
-	MaxTurns        int           // default 100; agent_definition.max_turns_per_run not yet introduced (v1)
-	MaxWallTime     time.Duration // default 900s
+	MaxTurns        int           // default 300; agent_definition.max_turns_per_run not yet introduced (v1)
+	MaxWallTime     time.Duration // default 30m
 	MaxDailyCredits int64         // from agent_definition.daily_credit_cap or default 200000
 }
 

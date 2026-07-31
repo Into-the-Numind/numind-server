@@ -57,7 +57,7 @@ type SkillManifest struct {
 	OutputMimeTypes []string `json:"output_mime_types"`
 
 	// MaxRuntimeSeconds is the sandbox timeout for this skill's Python execution.
-	// Must be ≤ 60. Default is 30 when zero.
+	// Must be ≤ 180. Default is 30 when zero.
 	MaxRuntimeSeconds int `json:"max_runtime_seconds"`
 
 	// MaxOutputSizeMB is the size cap (in MiB) for a single output file.
@@ -78,7 +78,7 @@ type SkillManifest struct {
 // the first violation found.
 //
 // Required fields: Name, Version, Description.
-// Hard constraints: MaxRuntimeSeconds ≤ 60, MaxOutputSizeMB ≤ 100.
+// Hard constraints: MaxRuntimeSeconds ≤ 180, MaxOutputSizeMB ≤ 100.
 func (m *SkillManifest) Validate() error {
 	if m.Name == "" {
 		return errors.New("manifest: name is required")
@@ -89,8 +89,8 @@ func (m *SkillManifest) Validate() error {
 	if m.Description == "" {
 		return errors.New("manifest: description is required")
 	}
-	if m.MaxRuntimeSeconds > 60 {
-		return fmt.Errorf("manifest: max_runtime_seconds %d exceeds hard limit of 60", m.MaxRuntimeSeconds)
+	if m.MaxRuntimeSeconds > 180 {
+		return fmt.Errorf("manifest: max_runtime_seconds %d exceeds hard limit of 180", m.MaxRuntimeSeconds)
 	}
 	if m.MaxOutputSizeMB > 100 {
 		return fmt.Errorf("manifest: max_output_size_mb %d exceeds hard limit of 100", m.MaxOutputSizeMB)
