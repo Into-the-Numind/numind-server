@@ -24,6 +24,7 @@ Commits:
 - `npm run lint && npm run type-check` passed.
 - `npm run test:e2e -- --project=mocked e2e/agent-streaming.spec.ts` passed with 10 passed and 1 existing known-flaky skip.
 - Focused regression after the fix reported `clientHeight=346`, `scrollHeight=5051`, `scrollTop=4705`, and `tailClipped=false`.
+- Dev deployment completed for `numind-web-v3` image `develop-340c772` with registry digest `sha256:460c063c984d48018b1f8c27d7b8188e62be80499a936b8fe0a58bda72c9aad7`; public `/health` returned `healthy`.
 
 ## Decisions
 
