@@ -32,6 +32,12 @@ type mockFileParser struct {
 	calls     int
 }
 
+func TestNewFileReadToolWithStore_DefaultCacheWait(t *testing.T) {
+	tool, ok := NewFileReadToolWithStore(nil, nil, nil, newStubStore()).(*fileReadTool)
+	require.True(t, ok)
+	assert.Equal(t, 5*time.Second, tool.cacheWait)
+}
+
 func TestFileRead_LangfuseContainsOnlySafePaginationMetadata(t *testing.T) {
 	srv := newHeadServer(t, 200, "text/plain", 128)
 	secretContent := "customer-secret-file-content"

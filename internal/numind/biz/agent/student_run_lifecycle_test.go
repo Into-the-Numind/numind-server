@@ -651,11 +651,12 @@ func TestAcquireStreamLock_PersistsInitialUserTurnWithAttachment(t *testing.T) {
 	skillStore := newLifecycleSkillStore()
 	skillStore.defs[7] = &model.AgentDefinition{ID: 7, ParentUserID: 123}
 	att := &model.AgentAttachment{
-		ID:       42,
-		UserID:   123,
-		URL:      "https://bucket.cos.ap-chengdu.myqcloud.com/agent-attachments/123/managed.docx",
-		Filename: "managed.docx",
-		MimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+		ID:            42,
+		UserID:        123,
+		URL:           "https://bucket.cos.ap-chengdu.myqcloud.com/agent-attachments/123/managed.docx",
+		Filename:      "managed.docx",
+		MimeType:      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+		FallbackReady: true,
 	}
 	svc := NewStudentRunService(&lifecycleRunner{}, runStore, skillStore, nil, nil, nil).
 		WithAttachmentStore(newStubStore(att))
@@ -684,6 +685,33 @@ func TestAcquireStreamLock_PersistsInitialUserTurnWithAttachment(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, "managed.docx", att0["filename"])
 	assert.Equal(t, att.URL, att0["url"])
+}
+
+func TestAcquireStreamLock_RejectsPendingAttachment(t *testing.T) {
+	runStore := newLifecycleRunStore()
+	skillStore := newLifecycleSkillStore()
+	skillStore.defs[7] = &model.AgentDefinition{ID: 7, ParentUserID: 123}
+	att := &model.AgentAttachment{
+		ID:       42,
+		UserID:   123,
+		URL:      "https://bucket.cos.ap-chengdu.myqcloud.com/agent-attachments/123/pending.pdf",
+		Filename: "pending.pdf",
+		MimeType: "application/pdf",
+	}
+	svc := NewStudentRunService(&lifecycleRunner{}, runStore, skillStore, nil, nil, nil).
+		WithAttachmentStore(newStubStore(att))
+
+	runID, acquired, err := svc.AcquireStreamLock(context.Background(), 123, CreateRunRequest{
+		AgentDefinitionID: 7,
+		Message:           "总结",
+		AttachmentIDs:     []uint64{42},
+	})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "附件仍在解析中")
+	assert.Zero(t, runID)
+	assert.False(t, acquired)
+	assert.Empty(t, runStore.runs)
 }
 
 // TestLoadSessionHistory_ReturnsPriorTurnsChronological verifies the multi-turn
