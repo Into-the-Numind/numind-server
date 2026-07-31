@@ -185,6 +185,88 @@ func TestLarkExecuteBPlusModelInputProtocolErrors(t *testing.T) {
 	})
 }
 
+func TestLarkCompanionToolsModelInputProtocolErrors(t *testing.T) {
+	t.Run("skill read missing skill is explicitly model to backend and stops", func(t *testing.T) {
+		const runID = uint64(369)
+		larkToolInputProtocolClearRun(runID)
+		t.Cleanup(func() { larkToolInputProtocolClearRun(runID) })
+		executor := &fakeSkillReadExecutor{result: &feishu.SkillReadPage{
+			Skill:   "lark-doc",
+			Path:    "SKILL.md",
+			Content: "must-not-read",
+		}}
+		tool := &larkSkillReadTool{executor: executor}
+		require.Contains(t, tool.Description(), `{"skill":"lark-doc"}`)
+
+		first, err := tool.Execute(WithRunID(context.Background(), runID), ToolInput(`{}`))
+		require.NoError(t, err)
+		assert.JSONEq(t, `{
+			"error":"ERROR: lark_skill_read 缺少 skill；失败发生在大模型到后端的工具参数层，不是飞书端失败。下一次必须传 skill，例如 {\"skill\":\"lark-doc\"}。可选 skill：lark-shared、lark-doc、lark-base、lark-wiki、lark-drive。",
+			"code":"missing_skill",
+			"category":"input_protocol",
+			"layer":"model_to_backend",
+			"stage":"pre_execution",
+			"attempt":1,
+			"max_attempts":2,
+			"same_error_attempt":1,
+			"same_error_max_attempts":2,
+			"remaining_attempts":1,
+			"feishu_called":false,
+			"recoverable":true,
+			"retryable":false
+		}`, string(first))
+		assert.Empty(t, executor.snapshot())
+
+		second, err := tool.Execute(WithRunID(context.Background(), runID), ToolInput(`{}`))
+		require.NoError(t, err)
+		require.Contains(t, string(second), `"code":"input_protocol_exhausted"`)
+		require.Contains(t, string(second), `"layer":"model_to_backend"`)
+		require.Contains(t, string(second), `"same_error_attempt":2`)
+		require.Contains(t, string(second), `"feishu_called":false`)
+		require.Contains(t, string(second), `"recoverable":false`)
+		require.Contains(t, string(second), "只修正 lark_skill_read 的 skill/reference 工具参数")
+		assert.Empty(t, executor.snapshot())
+	})
+
+	t.Run("inspect command missing argv is explicitly model to backend and stops", func(t *testing.T) {
+		const runID = uint64(370)
+		larkToolInputProtocolClearRun(runID)
+		t.Cleanup(func() { larkToolInputProtocolClearRun(runID) })
+		inspector := &fakeLarkInspector{result: &feishu.InspectionResult{Mode: feishu.InspectionModeCommand}}
+		tool := &larkInspectTool{inspector: inspector}
+		require.Contains(t, tool.Description(), `{"mode":"connection"}`)
+		require.Contains(t, tool.Description(), `{"mode":"command","argv"`)
+
+		first, err := tool.Execute(larkPersonalWorkspaceContext(437, runID, "inspect-missing-argv-1"), ToolInput(`{"mode":"command"}`))
+		require.NoError(t, err)
+		assert.JSONEq(t, `{
+			"error":"ERROR: lark_inspect command 模式缺少 argv；失败发生在大模型到后端的工具参数层，不是飞书端失败。下一次必须传 mode 和 argv，例如 {\"mode\":\"command\",\"argv\":[\"lark-cli\",\"docs\",\"+fetch\",\"--doc\",\"<文档URL或token>\"]}。如果只检查连接状态，请传 {\"mode\":\"connection\"}。",
+			"code":"missing_inspect_argv",
+			"category":"input_protocol",
+			"layer":"model_to_backend",
+			"stage":"pre_execution",
+			"attempt":1,
+			"max_attempts":2,
+			"same_error_attempt":1,
+			"same_error_max_attempts":2,
+			"remaining_attempts":1,
+			"feishu_called":false,
+			"recoverable":true,
+			"retryable":false
+		}`, string(first))
+		assert.Empty(t, inspector.snapshot())
+
+		second, err := tool.Execute(larkPersonalWorkspaceContext(437, runID, "inspect-missing-argv-2"), ToolInput(`{"mode":"command"}`))
+		require.NoError(t, err)
+		require.Contains(t, string(second), `"code":"input_protocol_exhausted"`)
+		require.Contains(t, string(second), `"same_error_attempt":2`)
+		require.Contains(t, string(second), `"feishu_called":false`)
+		require.Contains(t, string(second), `"recoverable":false`)
+		require.Contains(t, string(second), "只修正 lark_inspect 的 mode/argv 工具参数")
+		assert.Empty(t, inspector.snapshot())
+	})
+}
+
 func TestLangfuseLarkSkillReadContainsOnlySafeReferenceEvidence(t *testing.T) {
 	const (
 		runID           = uint64(359)
