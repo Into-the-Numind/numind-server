@@ -333,6 +333,9 @@ func (s *StudentRunService) Create(ctx context.Context, userID uint, req CreateR
 	if req.hasNoSendable() {
 		return nil, errno.ErrBind.SetMessage("message or attachment is required")
 	}
+	if err := s.ensureAttachmentsReady(ctx, userID, req.AttachmentIDs); err != nil {
+		return nil, err
+	}
 
 	// Validate agent definition exists and belongs to the learner's parent.
 	ad, err := s.resolveDefinition(ctx, userID, req.AgentDefinitionID)
@@ -639,6 +642,28 @@ func loadAttachmentsByIDs(
 	return results
 }
 
+func (s *StudentRunService) ensureAttachmentsReady(ctx context.Context, userID uint, ids []uint64) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	if s.attachmentStore == nil {
+		return errno.ErrInvalidParameter.SetMessage("附件服务暂不可用，请稍后再试")
+	}
+	for _, id := range ids {
+		att, err := s.attachmentStore.GetByIDAndUser(ctx, id, userID)
+		if err != nil {
+			return errno.ErrInvalidParameter.SetMessage("附件不存在或无权访问，请重新上传")
+		}
+		if !att.FallbackReady {
+			return errno.ErrInvalidParameter.SetMessage("附件仍在解析中，请稍后再试")
+		}
+		if att.FallbackError != nil && strings.TrimSpace(*att.FallbackError) != "" {
+			return errno.ErrInvalidParameter.SetMessage("附件解析失败，请重新上传或换一个文件")
+		}
+	}
+	return nil
+}
+
 // ---------------------------------------------------------------------------
 // T07 — SSE streaming: AcquireStreamLock / ReleaseStreamLock / RunStream
 // ---------------------------------------------------------------------------
@@ -654,6 +679,9 @@ func loadAttachmentsByIDs(
 func (s *StudentRunService) AcquireStreamLock(ctx context.Context, userID uint, req CreateRunRequest) (runID uint64, acquired bool, err error) {
 	if req.hasNoSendable() {
 		return 0, false, errno.ErrBind.SetMessage("message or attachment is required")
+	}
+	if err := s.ensureAttachmentsReady(ctx, userID, req.AttachmentIDs); err != nil {
+		return 0, false, err
 	}
 
 	// Validate agent definition. The returned ad is intentionally unused — its
