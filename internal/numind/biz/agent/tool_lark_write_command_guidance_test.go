@@ -27,6 +27,7 @@ func TestLarkPersonalWorkspace_Run359WriteCommandContract(t *testing.T) {
 		schema := string((&larkExecuteTool{}).InputSchema())
 		require.NotContains(t, schema, "stdin_json")
 		require.Contains(t, schema, "complete inline")
+		require.Contains(t, (&larkExecuteTool{}).Description(), "Minimum valid example, not the full Lark Docs guide")
 		require.Contains(t, larkHostedExecutionPolicy, "完整内联")
 		require.Contains(t, larkHostedExecutionPolicy, "不支持 `stdin_json`")
 		require.Contains(t, larkHostedExecutionPolicy, "`@file`")
@@ -118,6 +119,69 @@ func TestLarkPersonalWorkspace_Run359WriteCommandContract(t *testing.T) {
 		require.Contains(t, string(result), `"code":"unsupported_stdin_json"`)
 		require.Contains(t, string(result), `"feishu_called":false`)
 		require.Empty(t, executor.snapshot())
+	})
+}
+
+func TestLarkExecuteBPlusModelInputProtocolErrors(t *testing.T) {
+	t.Run("missing argv is explicitly model to backend and not Feishu", func(t *testing.T) {
+		const runID = uint64(367)
+		larkExecuteRetryClearRun(runID)
+		t.Cleanup(func() { larkExecuteRetryClearRun(runID) })
+		executor := &fakeLarkExecutor{result: &feishu.OperationResult{
+			OperationID: "must-not-run-missing-argv",
+			State:       model.FeishuOperationSucceeded,
+			Data:        json.RawMessage(`{"ok":true}`),
+		}}
+
+		result, err := (&larkExecuteTool{executor: executor}).Execute(
+			larkPersonalWorkspaceContext(437, runID, "missing-argv"),
+			ToolInput(`{}`),
+		)
+
+		require.NoError(t, err)
+		assert.JSONEq(t, `{
+			"error":"ERROR: lark_execute 缺少 argv；失败发生在大模型到后端的工具参数层，不是飞书端失败。下一次必须传 argv 数组，例如 {\"argv\":[\"lark-cli\",\"docs\",\"+create\",\"--title\",\"标题\",\"--content\",\"正文\",\"--doc-format\",\"markdown\"]}。",
+			"code":"missing_argv",
+			"category":"input_protocol",
+			"layer":"model_to_backend",
+			"stage":"pre_execution",
+			"attempt":1,
+			"max_attempts":10,
+			"same_error_attempt":1,
+			"same_error_max_attempts":2,
+			"remaining_attempts":9,
+			"feishu_called":false,
+			"recoverable":true,
+			"retryable":false
+		}`, string(result))
+		assert.Empty(t, executor.snapshot())
+	})
+
+	t.Run("second missing argv stops same-error guessing", func(t *testing.T) {
+		const runID = uint64(368)
+		larkExecuteRetryClearRun(runID)
+		t.Cleanup(func() { larkExecuteRetryClearRun(runID) })
+		executor := &fakeLarkExecutor{result: &feishu.OperationResult{
+			OperationID: "must-not-run-second-missing-argv",
+			State:       model.FeishuOperationSucceeded,
+			Data:        json.RawMessage(`{"ok":true}`),
+		}}
+		tool := &larkExecuteTool{executor: executor}
+
+		first, err := tool.Execute(larkPersonalWorkspaceContext(437, runID, "missing-argv-1"), ToolInput(`{}`))
+		require.NoError(t, err)
+		require.Contains(t, string(first), `"code":"missing_argv"`)
+		require.Contains(t, string(first), `"recoverable":true`)
+
+		second, err := tool.Execute(larkPersonalWorkspaceContext(437, runID, "missing-argv-2"), ToolInput(`{}`))
+		require.NoError(t, err)
+		require.Contains(t, string(second), `"code":"input_protocol_exhausted"`)
+		require.Contains(t, string(second), `"layer":"model_to_backend"`)
+		require.Contains(t, string(second), `"same_error_attempt":2`)
+		require.Contains(t, string(second), `"feishu_called":false`)
+		require.Contains(t, string(second), `"recoverable":false`)
+		require.Contains(t, string(second), "不要猜测标题、内容长度、飞书权限、连接状态或限流")
+		assert.Empty(t, executor.snapshot())
 	})
 }
 
