@@ -115,7 +115,13 @@ func TestCheckAndEstimateBudget_PaidModel_ZeroBalance_Insufficient(t *testing.T)
 func TestCheckAndEstimateBudget_PaidModel_MemberWithBalance_OK(t *testing.T) {
 	svc, db := buildFMService(t)
 	uid := uint(8007)
-	seedActiveMember(t, db, uid) // active sub → INV-20 default grants monthly quota
+	now := time.Now()
+	seedPackagesAndAccount(t, db, uid, []seedPackage{{
+		Type:          model.CreditTypeSubscription,
+		RemainCredits: 2000,
+		ActivatedAt:   now.AddDate(0, -1, 0),
+		ExpiresAt:     now.AddDate(0, 1, 0),
+	}})
 	user := &model.User{}
 	user.ID = uid
 
