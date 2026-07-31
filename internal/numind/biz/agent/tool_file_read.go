@@ -99,7 +99,7 @@ func NewFileReadToolWithStore(doc, img, txt fileParser, attStore store.IAgentAtt
 		imageParser:     img,
 		textParser:      txt,
 		attachmentStore: attStore,
-		cacheWait:       1500 * time.Millisecond,
+		cacheWait:       fileReadCacheWait,
 		headRequestFn:   managedFileHEAD,
 		presignFn:       util.GenerateSignedURLForMethod,
 	}
@@ -124,6 +124,7 @@ func (t *fileReadTool) AlwaysLoad() bool            { return true }
 const (
 	fileReadDefaultLimitBytes = 64 * 1024
 	fileReadMaxLimitBytes     = 64 * 1024
+	fileReadCacheWait         = 5 * time.Second
 )
 
 // attachmentPathRE matches /agent-attachments/<userID>/ OR /agent-outputs/<userID>/
@@ -486,7 +487,7 @@ func (t *fileReadTool) readCachedAttachment(
 }
 
 // waitForCachedAttachment absorbs the normal upload→worker race without doing
-// any parsing in file_read. Production waits at most 1.5s; direct unit-test
+// any parsing in file_read. Production waits at most 5s; direct unit-test
 // constructions default to zero and remain immediate.
 func (t *fileReadTool) waitForCachedAttachment(
 	ctx context.Context,
