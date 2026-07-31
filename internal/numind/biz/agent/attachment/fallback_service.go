@@ -186,11 +186,8 @@ const (
 	retryDelay2 = 4 * time.Second
 	retryDelay3 = 16 * time.Second
 
-	// PDF size limit for direct Bailian upload (MVP constraint).
-	maxPDFBytes = 10 * 1024 * 1024 // 10MB
-
-	// Document (office) size limit for local extraction; matches the agent
-	// attachment upload cap (biz/attachment/upload.go MaxUploadSize = 20MB).
+	// Document size limit for local extraction; matches the agent attachment
+	// upload cap (biz/attachment/upload.go MaxUploadSize = 20MB).
 	maxDocumentBytes int64 = 20 * 1024 * 1024 // 20MB
 
 	// text_fallback remains a MySQL TEXT compatibility column. Canonical full
@@ -488,17 +485,13 @@ func (p *fallbackPool) generateDocument(ctx context.Context, att *model.AgentAtt
 		return nil // not retry-able
 	}
 
-	// Download bytes (COS objects are private → presign a GET URL).
-	data, err := downloadBytes(ctx, presignIfCOS(ctx, att.URL), maxDocumentBytes)
+	text, err := extractLocalDocumentText(ctx, att, maxDocumentBytes)
 	if err != nil {
-		return fmt.Errorf("generateDocument download: %w", err)
+		return fmt.Errorf("generateDocument extract: %w", err)
 	}
-
-	text, err := parser.NewDocumentParser().Parse(ctx, bytes.NewReader(data), att.Filename)
-	if err != nil {
-		return fmt.Errorf("generateDocument parse: %w", err)
+	if err := validateExtractedText(att, text); err != nil {
+		return p.finishExtractionFailure(ctx, att, err.Error(), composeDocumentFallback(att.Filename, filesizeKB, ""))
 	}
-	text = strings.TrimSpace(text)
 
 	fallbackText := composeDocumentFallback(att.Filename, filesizeKB, text)
 	completed := time.Now()
@@ -511,6 +504,129 @@ func (p *fallbackPool) generateDocument(ctx context.Context, att *model.AgentAtt
 		return fmt.Errorf("generateDocument UpdateFallback: %w", err)
 	}
 	return nil
+}
+
+func extractLocalDocumentText(ctx context.Context, att *model.AgentAttachment, maxBytes int64) (string, error) {
+	// Download bytes (COS objects are private → presign a GET URL).
+	data, err := downloadBytes(ctx, presignIfCOS(ctx, att.URL), maxBytes)
+	if err != nil {
+		return "", fmt.Errorf("download: %w", err)
+	}
+
+	text, err := parser.NewDocumentParser().Parse(ctx, bytes.NewReader(data), att.Filename)
+	if err != nil {
+		return "", fmt.Errorf("parse: %w", err)
+	}
+	return strings.TrimSpace(text), nil
+}
+
+func (p *fallbackPool) finishExtractionFailure(ctx context.Context, att *model.AgentAttachment, errMsg string, fallbackText string) error {
+	completed := time.Now()
+	if err := p.store.UpdateFallback(ctx, att.ID, map[string]interface{}{
+		"fallback_ready":           true,
+		"fallback_error":           errMsg,
+		"text_fallback":            fallbackText,
+		"fallback_completed_at":    completed,
+		"parsed_content":           nil,
+		"parsed_content_sha256":    "",
+		"parsed_content_byte_size": int64(0),
+		"parsed_page_count":        0,
+		"parsed_at":                nil,
+	}); err != nil {
+		return fmt.Errorf("finish extraction failure: %w", err)
+	}
+	return nil
+}
+
+func validateExtractedText(att *model.AgentAttachment, text string) error {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return fmt.Errorf("%s text extraction returned empty content", att.Modality)
+	}
+	if looksLikeProviderRefusal(trimmed) {
+		return fmt.Errorf("%s text extraction returned provider refusal text", att.Modality)
+	}
+	if looksLikeAccessError(trimmed) {
+		return fmt.Errorf("%s text extraction returned access error text", att.Modality)
+	}
+	if att.Modality == ModalityPDF && isSparsePDFExtraction(att.Size, trimmed) {
+		return fmt.Errorf("PDF text extraction returned too little text; possible scanned or image-only PDF")
+	}
+	return nil
+}
+
+func looksLikeProviderRefusal(text string) bool {
+	sample := strings.ToLower(firstNRunes(text, 1200))
+	phrases := []string{
+		"我无法直接访问",
+		"我无法访问",
+		"无法访问或提取",
+		"不能下载",
+		"无法下载",
+		"不能读取该pdf",
+		"无法读取该pdf",
+		"cannot access",
+		"can't access",
+		"unable to access",
+		"cannot download",
+		"can't download",
+		"unable to download",
+	}
+	for _, phrase := range phrases {
+		if strings.Contains(sample, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+func looksLikeAccessError(text string) bool {
+	sample := strings.ToLower(firstNRunes(text, 1200))
+	phrases := []string{
+		"403 forbidden",
+		"access denied",
+		"accessdenied",
+		"signaturedoesnotmatch",
+		"nosuchkey",
+		"request has expired",
+		"<error>",
+	}
+	for _, phrase := range phrases {
+		if strings.Contains(sample, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+func isSparsePDFExtraction(fileSize int64, text string) bool {
+	if fileSize < 256*1024 {
+		return false
+	}
+	return meaningfulRuneCount(text) < 40
+}
+
+func meaningfulRuneCount(text string) int {
+	count := 0
+	for _, r := range text {
+		if r >= '0' && r <= '9' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '\u4e00' && r <= '\u9fff' {
+			count++
+		}
+	}
+	return count
+}
+
+func firstNRunes(text string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	for i := range text {
+		if limit == 0 {
+			return text[:i]
+		}
+		limit--
+	}
+	return text
 }
 
 // downloadBytes fetches up to maxBytes from url via HTTP GET. Used by document
@@ -529,9 +645,12 @@ func downloadBytes(ctx context.Context, url string, maxBytes int64) ([]byte, err
 	if resp.StatusCode >= 400 {
 		return nil, fmt.Errorf("http %d", resp.StatusCode)
 	}
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes))
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("read body: %w", err)
+	}
+	if int64(len(data)) > maxBytes {
+		return nil, fmt.Errorf("file exceeds %d MiB download limit", maxBytes/1024/1024)
 	}
 	return data, nil
 }
@@ -619,49 +738,27 @@ func (p *fallbackPool) generateImage(ctx context.Context, att *model.AgentAttach
 	return nil
 }
 
-// generatePDF handles the PDF modality using qwen-long file API.
-// MVP constraint: only PDFs ≤ 10MB are processed; larger ones fail gracefully.
+// generatePDF handles the PDF modality via the shared local DocumentParser.
+// This keeps PDF behavior aligned with Word/PPT/Excel/text attachments and avoids
+// treating upstream model refusals as extracted document text.
 func (p *fallbackPool) generatePDF(ctx context.Context, att *model.AgentAttachment) error {
 	filesizeKB := att.Size / 1024
 
-	if att.Size > maxPDFBytes {
-		// MVP: large PDFs are not supported. Record a friendly error fallback.
-		errMsg := "PDF too large for extraction (max 10MB in MVP)"
+	if att.Size > maxDocumentBytes {
+		errMsg := fmt.Sprintf("PDF too large for extraction (max %dMB)", maxDocumentBytes/1024/1024)
 		fallbackText := composePDFFallback(att.Filename, filesizeKB, "")
-		completed := time.Now()
-		_ = p.store.UpdateFallback(ctx, att.ID, map[string]interface{}{
-			"fallback_ready":        true,
-			"fallback_error":        errMsg,
-			"text_fallback":         fallbackText,
-			"fallback_completed_at": completed,
-		})
-		return nil // not a retry-able failure
+		return p.finishExtractionFailure(ctx, att, errMsg, fallbackText)
 	}
 
-	// Use qwen-long via the attachment.pdf_extract task profile (P1 #4 fix:
-	// was incorrectly using agent.run + ModelOverride, which misattributes
-	// PDF extraction to the ReAct agent budget and bypasses proper routing).
 	pdfCtx, pdfCancel := context.WithTimeout(ctx, pdfTimeout)
 	defer pdfCancel()
 
-	resp, err := aiservice.Chat(pdfCtx, profile.AttachmentPDFExtract, aiservice.ChatRequest{
-		Messages: []aiservice.ChatMessage{
-			{
-				Role: aiservice.MessageRoleUser,
-				Content: aiservice.MessageContent{
-					Text: PDFExtractPrompt + presignIfCOS(ctx, att.URL),
-				},
-			},
-		},
-		MaxTokens: 8000,
-	})
+	extractedText, err := extractLocalDocumentText(pdfCtx, att, maxDocumentBytes)
 	if err != nil {
-		return fmt.Errorf("generatePDF chat: %w", err)
+		return fmt.Errorf("generatePDF extract: %w", err)
 	}
-
-	extractedText := ""
-	if resp != nil {
-		extractedText = strings.TrimSpace(resp.Content)
+	if err := validateExtractedText(att, extractedText); err != nil {
+		return p.finishExtractionFailure(ctx, att, err.Error(), composePDFFallback(att.Filename, filesizeKB, ""))
 	}
 
 	fallbackText := composePDFFallback(att.Filename, filesizeKB, extractedText)
