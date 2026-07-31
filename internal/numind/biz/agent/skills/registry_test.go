@@ -41,7 +41,7 @@ func validManifest(name string) map[string]interface{} {
 		"categories":          []string{"test"},
 		"required_libs":       []string{"openpyxl>=3.1"},
 		"output_mime_types":   []string{"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
-		"max_runtime_seconds": 30,
+		"max_runtime_seconds": 180,
 		"max_output_size_mb":  50,
 	}
 }
@@ -236,7 +236,7 @@ func TestSkillManifest_Validate_RequiredFields(t *testing.T) {
 // EffectiveMaxOutputMB return sensible defaults when the manifest fields are zero.
 func TestSkillManifest_EffectiveDefaults(t *testing.T) {
 	m := &skills.SkillManifest{Name: "x", Version: "1", Description: "x"}
-	assert.Equal(t, 30, m.EffectiveMaxRuntime())
+	assert.Equal(t, 180, m.EffectiveMaxRuntime())
 	assert.Equal(t, 50, m.EffectiveMaxOutputMB())
 	assert.Equal(t, "/workdir/input/", m.EffectiveInputDir())
 	assert.Equal(t, "/workdir/output/", m.EffectiveOutputDir())
