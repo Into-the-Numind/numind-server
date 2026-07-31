@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -237,6 +238,40 @@ func TestAgentRunStore_ListBySession(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, int64(5), total)
 	assert.Len(t, runs, 5)
+}
+
+func TestAgentRunStore_ListByUserDoesNotReturnFullMessages(t *testing.T) {
+	s := newTestAgentRunStore(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	firstPrompt := "请给飞书选题库笔记打标"
+	largeAssistantReply := strings.Repeat("assistant-token-", 80_000)
+	messages := datatypes.JSON([]byte(fmt.Sprintf(`[
+		{"role":"user","content":%q},
+		{"role":"assistant","content":%q}
+	]`, firstPrompt, largeAssistantReply)))
+
+	err := s.Create(ctx, &model.AgentRun{
+		UserID:      313,
+		SessionID:   "large-history-session",
+		Status:      "terminated",
+		StateReason: "completed",
+		Messages:    messages,
+		StartedAt:   now,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	})
+	require.NoError(t, err)
+
+	runs, err := s.ListByUser(ctx, 313, nil, 20)
+	require.NoError(t, err)
+	require.Len(t, runs, 1)
+
+	assert.Equal(t, "large-history-session", runs[0].SessionID)
+	assert.Contains(t, string(runs[0].Messages), firstPrompt)
+	assert.Less(t, len(runs[0].Messages), 4096, "history list should return a bounded preview transcript instead of the full stored transcript")
+	assert.NotContains(t, string(runs[0].Messages), largeAssistantReply[:256])
 }
 
 // ---------------------------------------------------------------------------
