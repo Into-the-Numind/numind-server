@@ -212,6 +212,36 @@ func TestGeneratePDFPersistsLocalDocumentParserText(t *testing.T) {
 	assert.Contains(t, *got.TextFallback, content)
 }
 
+func TestGeneratePDFRejectsProviderRefusalText(t *testing.T) {
+	const content = "I cannot access external PDF links or download files."
+	pdfBytes := minimalTextPDF(t, content)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/pdf")
+		_, _ = w.Write(pdfBytes)
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	s := newTestStore(t)
+	row := &model.AgentAttachment{
+		UserID: 7, URL: server.URL + "/refusal.pdf", Filename: "refusal.pdf",
+		MimeType: "application/pdf", Size: int64(len(pdfBytes)), Modality: att.ModalityPDF,
+	}
+	require.NoError(t, s.Create(ctx, row))
+	require.NoError(t, att.NewFallbackService(s).GenerateNow(ctx, row))
+
+	got, err := s.GetByID(ctx, row.ID)
+	require.NoError(t, err)
+	require.True(t, got.FallbackReady)
+	require.NotNil(t, got.FallbackError)
+	assert.Contains(t, *got.FallbackError, "provider refusal")
+	assert.Nil(t, got.ParsedContent)
+	require.NotNil(t, got.TextFallback)
+	assert.Contains(t, *got.TextFallback, "文本提取失败")
+}
+
 func minimalTextPDF(t *testing.T, text string) []byte {
 	t.Helper()
 
