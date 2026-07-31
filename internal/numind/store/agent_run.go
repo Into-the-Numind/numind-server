@@ -119,6 +119,8 @@ type agentRunStore struct {
 	db *gorm.DB
 }
 
+const agentRunListPreviewMaxChars = 512
+
 func newAgentRunStore(db *gorm.DB) IAgentRunStore {
 	return &agentRunStore{db: db}
 }
@@ -260,8 +262,10 @@ func (s *agentRunStore) ListByUser(ctx context.Context, userID uint, sinceTime *
 	subQuery = subQuery.Group("session_id")
 
 	var runs []model.AgentRun
-	// 2. 主查询：JOIN 子查询，并执行 order 排序
+	// 2. 主查询：JOIN 子查询，并执行 order 排序。列表只需要摘要字段，不能把
+	// messages 这种大 JSON 列带进排序/结果集，否则长会话会触发 MySQL sort_buffer。
 	err := s.db.WithContext(ctx).Model(&model.AgentRun{}).
+		Select(agentRunListSelectColumns()).
 		Joins("JOIN (?) as latest ON agent_run.session_id = latest.session_id AND agent_run.started_at = latest.max_started_at", subQuery).
 		Where("agent_run.user_id = ? AND agent_run.is_deleted = false", userID).
 		Order("agent_run.is_pinned DESC, agent_run.started_at DESC").
@@ -271,7 +275,90 @@ func (s *agentRunStore) ListByUser(ctx context.Context, userID uint, sinceTime *
 	if err != nil {
 		return nil, fmt.Errorf("agentRunStore.ListByUser(userID=%d): %w", userID, err)
 	}
+	if err := s.hydrateListPreviewMessages(ctx, runs); err != nil {
+		return nil, fmt.Errorf("agentRunStore.ListByUser preview(userID=%d): %w", userID, err)
+	}
 	return runs, nil
+}
+
+func agentRunListSelectColumns() []string {
+	return []string{
+		"agent_run.id",
+		"agent_run.user_id",
+		"agent_run.session_id",
+		"agent_run.status",
+		"agent_run.state_reason",
+		"agent_run.reservation_id",
+		"agent_run.started_at",
+		"agent_run.ended_at",
+		"agent_run.cancellation_requested_at",
+		"agent_run.agent_definition_id",
+		"agent_run.created_at",
+		"agent_run.updated_at",
+		"agent_run.use_compact_v2",
+		"agent_run.is_pinned",
+		"agent_run.session_name",
+		"agent_run.is_deleted",
+		"agent_run.is_test",
+	}
+}
+
+type agentRunListPreviewRow struct {
+	ID      uint64 `gorm:"column:id"`
+	Preview string `gorm:"column:preview"`
+}
+
+func (s *agentRunStore) hydrateListPreviewMessages(ctx context.Context, runs []model.AgentRun) error {
+	if len(runs) == 0 {
+		return nil
+	}
+
+	ids := make([]uint64, 0, len(runs))
+	for _, run := range runs {
+		ids = append(ids, run.ID)
+	}
+
+	var rows []agentRunListPreviewRow
+	if err := s.db.WithContext(ctx).Model(&model.AgentRun{}).
+		Select("id, "+s.listPreviewExpression()+" AS preview", agentRunListPreviewMaxChars).
+		Where("id IN ?", ids).
+		Scan(&rows).Error; err != nil {
+		return err
+	}
+
+	previewByID := make(map[uint64]string, len(rows))
+	for _, row := range rows {
+		previewByID[row.ID] = row.Preview
+	}
+	for i := range runs {
+		runs[i].Messages = agentRunListPreviewMessages(previewByID[runs[i].ID])
+	}
+	return nil
+}
+
+func (s *agentRunStore) listPreviewExpression() string {
+	switch s.db.Dialector.Name() {
+	case "mysql":
+		return "COALESCE(CASE WHEN JSON_VALID(messages) THEN LEFT(JSON_UNQUOTE(JSON_EXTRACT(messages, '$[0].content')), ?) ELSE '' END, '')"
+	case "sqlite":
+		return "COALESCE(CASE WHEN json_valid(messages) THEN substr(json_extract(messages, '$[0].content'), 1, ?) ELSE '' END, '')"
+	default:
+		return "''"
+	}
+}
+
+func agentRunListPreviewMessages(preview string) datatypes.JSON {
+	if preview == "" {
+		return datatypes.JSON(`[]`)
+	}
+	payload, err := json.Marshal([]map[string]string{{
+		"role":    "user",
+		"content": preview,
+	}})
+	if err != nil {
+		return datatypes.JSON(`[]`)
+	}
+	return datatypes.JSON(payload)
 }
 
 // MergeTerminalMetadata reads the current terminal_metadata, shallow-merges patch keys into
