@@ -6,6 +6,7 @@
 package attachment_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"fmt"
@@ -178,6 +179,71 @@ func TestGenerateLargeTextKeepsFullCanonicalContentAndBoundsLegacyFallback(t *te
 	require.NotNil(t, got.TextFallback)
 	assert.Less(t, len(*got.TextFallback), 65_535)
 	assert.True(t, utf8.ValidString(*got.TextFallback))
+}
+
+func TestGeneratePDFPersistsLocalDocumentParserText(t *testing.T) {
+	const content = "Numind PDF Body Text"
+	pdfBytes := minimalTextPDF(t, content)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/pdf")
+		_, _ = w.Write(pdfBytes)
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	s := newTestStore(t)
+	row := &model.AgentAttachment{
+		UserID: 7, URL: server.URL + "/ming-positioning.pdf", Filename: "ming-positioning.pdf",
+		MimeType: "application/pdf", Size: int64(len(pdfBytes)), Modality: att.ModalityPDF,
+	}
+	require.NoError(t, s.Create(ctx, row))
+	require.NoError(t, att.NewFallbackService(s).GenerateNow(ctx, row))
+
+	got, err := s.GetByID(ctx, row.ID)
+	require.NoError(t, err)
+	require.True(t, got.FallbackReady)
+	require.Nil(t, got.FallbackError)
+	require.NotNil(t, got.ParsedContent)
+	assert.Contains(t, *got.ParsedContent, content)
+	assert.NotContains(t, *got.ParsedContent, "无法直接访问")
+	require.NotNil(t, got.TextFallback)
+	assert.Contains(t, *got.TextFallback, content)
+}
+
+func minimalTextPDF(t *testing.T, text string) []byte {
+	t.Helper()
+
+	var b bytes.Buffer
+	_, _ = b.WriteString("%PDF-1.4\n")
+
+	offsets := make([]int, 0, 5)
+	writeObj := func(id int, body string) {
+		offsets = append(offsets, b.Len())
+		_, _ = fmt.Fprintf(&b, "%d 0 obj\n%s\nendobj\n", id, body)
+	}
+
+	stream := fmt.Sprintf("BT /F1 24 Tf 100 700 Td (%s) Tj ET\n", pdfEscape(text))
+	writeObj(1, "<< /Type /Catalog /Pages 2 0 R >>")
+	writeObj(2, "<< /Type /Pages /Kids [3 0 R] /Count 1 >>")
+	writeObj(3, "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>")
+	writeObj(4, fmt.Sprintf("<< /Length %d >>\nstream\n%sendstream", len(stream), stream))
+	writeObj(5, "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
+
+	xrefOffset := b.Len()
+	_, _ = b.WriteString("xref\n0 6\n0000000000 65535 f \n")
+	for _, offset := range offsets {
+		_, _ = fmt.Fprintf(&b, "%010d 00000 n \n", offset)
+	}
+	_, _ = fmt.Fprintf(&b, "trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n", xrefOffset)
+
+	return b.Bytes()
+}
+
+func pdfEscape(text string) string {
+	replacer := strings.NewReplacer(`\`, `\\`, `(`, `\(`, `)`, `\)`)
+	return replacer.Replace(text)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
