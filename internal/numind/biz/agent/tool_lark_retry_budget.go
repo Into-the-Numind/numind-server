@@ -37,11 +37,13 @@ const (
 )
 
 type larkExecuteRetryState struct {
-	mu                  sync.Mutex
-	phase               larkExecuteRetryPhase
-	correctableFailures uint8
-	activeWriteFenceKey string
-	unknownWriteFences  map[string]struct{}
+	mu                    sync.Mutex
+	phase                 larkExecuteRetryPhase
+	correctableFailures   uint8
+	activeWriteFenceKey   string
+	unknownWriteFences    map[string]struct{}
+	inputProtocolCode     string
+	inputProtocolFailures uint8
 }
 
 // larkExecuteRetryRuns is process-local because one Agent run is executed by
@@ -69,11 +71,15 @@ func larkExecuteRetrySeedExternalResult(runID uint64, raw json.RawMessage) bool 
 		state.phase = larkRetryReady
 		state.correctableFailures = 0
 		state.activeWriteFenceKey = ""
+		state.inputProtocolCode = ""
+		state.inputProtocolFailures = 0
 		return true
 	}
 	if larkFailureAllowsCorrection(failure) {
 		state.correctableFailures = 1
 		state.phase = larkRetryCorrectionAvailable
+		state.inputProtocolCode = ""
+		state.inputProtocolFailures = 0
 		return true
 	}
 	// A terminal result for one command is evidence for the Agent, not authority
@@ -82,6 +88,8 @@ func larkExecuteRetrySeedExternalResult(runID uint64, raw json.RawMessage) bool 
 	state.phase = larkRetryReady
 	state.correctableFailures = 0
 	state.activeWriteFenceKey = ""
+	state.inputProtocolCode = ""
+	state.inputProtocolFailures = 0
 	return true
 }
 
@@ -157,6 +165,8 @@ func larkExecuteRetryRejected(state *larkExecuteRetryState, attempt larkExecuteR
 	}
 	state.mu.Lock()
 	defer state.mu.Unlock()
+	state.inputProtocolCode = ""
+	state.inputProtocolFailures = 0
 	if attempt == larkExecuteReconciliationRead {
 		return false
 	}
@@ -174,6 +184,47 @@ func larkExecuteRetryRejected(state *larkExecuteRetryState, attempt larkExecuteR
 	}
 	state.phase = larkRetryCorrectionAvailable
 	return false
+}
+
+func larkExecuteRetryRejectedModelInput(
+	state *larkExecuteRetryState,
+	attempt larkExecuteRetryAttempt,
+	code string,
+) (correctionExhausted bool, inputProtocolExhausted bool, sameErrorAttempts int) {
+	if state == nil {
+		return true, false, larkExecuteMaxSameInputProtocolAttempts
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if attempt == larkExecuteReconciliationRead {
+		return false, false, 0
+	}
+
+	validAttempt := (attempt == larkExecuteNormalAttempt && state.phase == larkRetryNormalInFlight) ||
+		(attempt == larkExecuteCorrectionAttempt && state.phase == larkRetryCorrectionInFlight)
+	if !validAttempt {
+		state.phase = larkRetryExhausted
+		return true, false, larkExecuteMaxSameInputProtocolAttempts
+	}
+
+	state.correctableFailures++
+	if code != "" && state.inputProtocolCode == code {
+		state.inputProtocolFailures++
+	} else {
+		state.inputProtocolCode = code
+		state.inputProtocolFailures = 1
+	}
+	sameErrorAttempts = int(state.inputProtocolFailures)
+	if sameErrorAttempts >= larkExecuteMaxSameInputProtocolAttempts {
+		state.phase = larkRetryExhausted
+		return false, true, sameErrorAttempts
+	}
+	if state.correctableFailures >= larkExecuteMaxCorrectableAttempts {
+		state.phase = larkRetryExhausted
+		return true, false, sameErrorAttempts
+	}
+	state.phase = larkRetryCorrectionAvailable
+	return false, false, sameErrorAttempts
 }
 
 func larkExecuteRetryProgress(state *larkExecuteRetryState) (attempts, remaining int) {
@@ -201,6 +252,8 @@ func larkExecuteRetryCompleted(state *larkExecuteRetryState, attempt larkExecute
 		state.phase = larkRetryReady
 		state.correctableFailures = 0
 		state.activeWriteFenceKey = ""
+		state.inputProtocolCode = ""
+		state.inputProtocolFailures = 0
 	}
 }
 
@@ -229,6 +282,8 @@ func larkExecuteRetryTerminalOutcome(
 	state.phase = larkRetryReady
 	state.correctableFailures = 0
 	state.activeWriteFenceKey = ""
+	state.inputProtocolCode = ""
+	state.inputProtocolFailures = 0
 	return false
 }
 
@@ -245,6 +300,8 @@ func larkExecuteRetryFailed(state *larkExecuteRetryState, _ larkExecuteRetryAtte
 	state.phase = larkRetryReady
 	state.correctableFailures = 0
 	state.activeWriteFenceKey = ""
+	state.inputProtocolCode = ""
+	state.inputProtocolFailures = 0
 }
 
 // larkExecuteWriteFenceKey returns an opaque digest only for catalog-proven

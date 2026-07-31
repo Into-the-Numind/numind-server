@@ -31,6 +31,8 @@ var _ FullTool = (*larkExecuteTool)(nil)
 func (t *larkExecuteTool) Name() string { return "lark_execute" }
 func (t *larkExecuteTool) Description() string {
 	return "Execute controlled lark-cli argv for Docs/Base/Wiki/Drive. " +
+		"Minimum valid example, not the full Lark Docs guide: " +
+		`{"argv":["lark-cli","docs","+create","--title","标题","--content","正文","--doc-format","markdown"]}. ` +
 		"argv may copy the official skill command verbatim with a leading `lark-cli`, or omit that one executable token. " +
 		"JSON bodies must be one complete inline argv value after --json; stdin and file indirection are not supported. " +
 		"Identity, authorization, scope, risk, and idempotency come only from server context. " +
@@ -59,7 +61,11 @@ type larkExecuteInput struct {
 	StdinJSON json.RawMessage
 }
 
-var errLarkExecuteStdinUnsupported = errors.New("stdin_json unsupported")
+var (
+	errLarkExecuteMissingArgv      = errors.New("argv missing")
+	errLarkExecuteInvalidArgv      = errors.New("argv invalid")
+	errLarkExecuteStdinUnsupported = errors.New("stdin_json unsupported")
+)
 
 func (t *larkExecuteTool) Execute(ctx context.Context, input ToolInput) (ToolResult, error) {
 	if t == nil || t.executor == nil || ctx == nil {
@@ -117,18 +123,43 @@ func (t *larkExecuteTool) Execute(ctx context.Context, input ToolInput) (ToolRes
 		code := "invalid_execute_input"
 		message := "飞书工作区参数无效；lark_execute 只接受有效的 argv。"
 		hint := "lark_execute 只接受有效的 argv"
+		if errors.Is(decodeErr, errLarkExecuteMissingArgv) {
+			code = "missing_argv"
+			message = `lark_execute 缺少 argv；失败发生在大模型到后端的工具参数层，不是飞书端失败。下一次必须传 argv 数组，例如 {"argv":["lark-cli","docs","+create","--title","标题","--content","正文","--doc-format","markdown"]}。`
+			hint = "lark_execute 缺少 argv"
+		}
 		if errors.Is(decodeErr, errLarkExecuteStdinUnsupported) {
 			code = "unsupported_stdin_json"
 			message = "有数托管环境不支持 stdin_json；请把完整 JSON 作为 --json 后的一个内联 argv。"
 			hint = "有数托管环境不支持 stdin_json，请使用完整内联 --json"
 		}
-		exhausted := larkExecuteRetryRejected(retryState, retryAttempt)
+		sameErrorAttempts := 0
+		exhausted := false
+		inputProtocolExhausted := false
+		if errors.Is(decodeErr, errLarkExecuteMissingArgv) {
+			exhausted, inputProtocolExhausted, sameErrorAttempts = larkExecuteRetryRejectedModelInput(retryState, retryAttempt, code)
+		} else {
+			exhausted = larkExecuteRetryRejected(retryState, retryAttempt)
+		}
 		attempts, remaining := larkExecuteRetryProgress(retryState)
 		spanOutput["attempt"] = attempts
 		spanErrorClass = code
+		if inputProtocolExhausted {
+			spanErrorClass = "input_protocol_exhausted"
+			return larkWorkspaceModelInputProtocolExhausted(code, hint, attempts, remaining, sameErrorAttempts)
+		}
 		if exhausted {
 			spanErrorClass = "correction_exhausted"
 			return larkWorkspaceCorrectionExhausted(hint)
+		}
+		if errors.Is(decodeErr, errLarkExecuteMissingArgv) {
+			return larkWorkspaceModelInputProtocolError(
+				code,
+				message,
+				attempts,
+				remaining,
+				sameErrorAttempts,
+			)
 		}
 		return larkWorkspaceCorrectableCommandError(
 			code,
@@ -318,8 +349,11 @@ func decodeLarkExecuteInput(input ToolInput) (larkExecuteInput, error) {
 	}
 	var decoded larkExecuteInput
 	argvRaw, ok := fields["argv"]
-	if !ok || json.Unmarshal(argvRaw, &decoded.Argv) != nil || len(decoded.Argv) == 0 {
-		return larkExecuteInput{}, fmt.Errorf("argv rejected")
+	if !ok {
+		return larkExecuteInput{}, errLarkExecuteMissingArgv
+	}
+	if json.Unmarshal(argvRaw, &decoded.Argv) != nil || len(decoded.Argv) == 0 {
+		return larkExecuteInput{}, errLarkExecuteInvalidArgv
 	}
 	// Official embedded skills intentionally show complete shell commands such as
 	// `lark-cli docs +create ...`. lark_execute is not a shell and the controlled
@@ -330,7 +364,7 @@ func decodeLarkExecuteInput(input ToolInput) (larkExecuteInput, error) {
 	if decoded.Argv[0] == "lark-cli" {
 		decoded.Argv = decoded.Argv[1:]
 		if len(decoded.Argv) == 0 {
-			return larkExecuteInput{}, fmt.Errorf("argv rejected")
+			return larkExecuteInput{}, errLarkExecuteInvalidArgv
 		}
 	}
 	// Rolling-upgrade compatibility only: old conversations may still include
@@ -342,6 +376,68 @@ func decodeLarkExecuteInput(input ToolInput) (larkExecuteInput, error) {
 		return larkExecuteInput{}, errLarkExecuteStdinUnsupported
 	}
 	return decoded, nil
+}
+
+const larkExecuteMaxSameInputProtocolAttempts = 2
+
+func larkWorkspaceModelInputProtocolError(
+	code, message string,
+	attempts, remaining int,
+	sameErrorAttempts int,
+) (ToolResult, error) {
+	if code == "" {
+		code = "invalid_execute_input"
+	}
+	if message == "" {
+		message = "lark_execute 参数无效；失败发生在大模型到后端的工具参数层，不是飞书端失败。"
+	}
+	output, _ := json.Marshal(map[string]any{
+		"error":                   "ERROR: " + message,
+		"code":                    code,
+		"category":                "input_protocol",
+		"layer":                   "model_to_backend",
+		"stage":                   "pre_execution",
+		"attempt":                 attempts,
+		"max_attempts":            larkExecuteMaxCorrectableAttempts,
+		"same_error_attempt":      sameErrorAttempts,
+		"same_error_max_attempts": larkExecuteMaxSameInputProtocolAttempts,
+		"remaining_attempts":      remaining,
+		"feishu_called":           false,
+		"recoverable":             true,
+		"retryable":               false,
+	})
+	return ToolResult(output), nil
+}
+
+func larkWorkspaceModelInputProtocolExhausted(
+	code, hint string,
+	attempts, remaining int,
+	sameErrorAttempts int,
+) (ToolResult, error) {
+	message := "连续工具参数错误，已停止当前任务后续的飞书执行命令。失败发生在大模型到后端的工具参数层，尚未调用飞书。"
+	if code != "" {
+		message += "错误类型：" + code + "。"
+	}
+	if hint != "" {
+		message += "最后一次校验原因：" + hint + "。"
+	}
+	message += "不要猜测标题、内容长度、飞书权限、连接状态或限流；只修正 lark_execute 的 argv 工具参数。"
+	output, _ := json.Marshal(map[string]any{
+		"error":                   "ERROR: " + message,
+		"code":                    "input_protocol_exhausted",
+		"category":                "input_protocol",
+		"layer":                   "model_to_backend",
+		"stage":                   "pre_execution",
+		"attempt":                 attempts,
+		"max_attempts":            larkExecuteMaxCorrectableAttempts,
+		"same_error_attempt":      sameErrorAttempts,
+		"same_error_max_attempts": larkExecuteMaxSameInputProtocolAttempts,
+		"remaining_attempts":      remaining,
+		"feishu_called":           false,
+		"recoverable":             false,
+		"retryable":               false,
+	})
+	return ToolResult(output), nil
 }
 
 func isLarkWaitingState(state string) bool {

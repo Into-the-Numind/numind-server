@@ -1,5 +1,28 @@
 schema_version: '2.0'
 features:
+- id: lark-execute-bplus
+  ndf_version: '3.0'
+  description: Add a minimal lark_execute protocol card, structured model-input errors, and same-error stop-loss for repeated missing argv tool calls.
+  classification_reason: 'Hotfix: backend-only Agent tool contract hardening, no DB schema, no new API endpoint, no new external integration, and three agent files.'
+  last_updated_by: ai-h2-verified
+  last_updated_at: '2026-07-31T15:41:37+0800'
+  last_verified: '2026-07-31T15:41:37+0800'
+  created_at: '2026-07-31T14:54:40+0800'
+  track: hotfix
+  stage: H2
+  status: active
+  repos: [numind-server]
+  branches: {numind-server: fix/lark-execute-bplus}
+  worktrees: {numind-server: /private/tmp/wt-lark-execute-bplus-numind-server}
+  progress: {total_tasks: 3, completed_tasks: 3, reviewed_tasks: 0, current_task: 'H2 automatic verification passed after merging develop with the credit fixture unblocker; ready for ndf-done merge to develop'}
+  artifacts:
+    h1_verification: .ndf/decisions/lark-execute-bplus/0001-h1-verification.md
+  decisions:
+  - 'Keep the short-term fix on option B+: improve the model-to-backend tool contract instead of exposing the raw Feishu CLI directly.'
+  - 'Describe the sample argv as a minimum valid example, not the full Lark Docs guide.'
+  - 'Only repeated missing argv uses the two-strike input-protocol stop-loss; existing command validation retries keep the prior ten-attempt budget.'
+  - 'H2: focused lark_execute tests, go test ./..., and task lint all pass after develop received the unrelated credit paid-member fixture fix.'
+  blockers: []
 - id: hide-skill-market-tab
   ndf_version: '3.0'
   description: Hide the user frontend Skill Marketplace sidebar tab for both parent accounts and child accounts while leaving routes and backend permissions unchanged.
