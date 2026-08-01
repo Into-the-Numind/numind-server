@@ -683,6 +683,7 @@ func TestAcquireStreamLock_PersistsInitialUserTurnWithAttachment(t *testing.T) {
 	require.Len(t, atts, 1)
 	att0, ok := atts[0].(map[string]any)
 	require.True(t, ok)
+	assert.Equal(t, float64(42), att0["attachment_id"])
 	assert.Equal(t, "managed.docx", att0["filename"])
 	assert.Equal(t, att.URL, att0["url"])
 }

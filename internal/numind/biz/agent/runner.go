@@ -37,11 +37,12 @@ import (
 )
 
 // RunRequest 是 AgentRunner.Run 的输入。
-// displayAttachment is a user-uploaded attachment {url, filename} persisted onto
-// the user turn for reload-time chip rendering (agent-output-ux-fixes 问题二).
+// displayAttachment is a user-uploaded attachment persisted onto the user turn
+// for reload-time chip rendering and later session-history file_read references.
 type displayAttachment struct {
-	URL      string
-	Filename string
+	AttachmentID uint64
+	URL          string
+	Filename     string
 }
 
 const unknownToolRecoveryResult = "[The requested tool is not available for this Agent. Do not retry it or assume it ran. Continue using only the tools in the current tool list. If the task cannot be completed safely with those tools, explain the limitation or ask the user.]"
@@ -167,7 +168,11 @@ func setUserTurnAttachments(turns []map[string]any, atts []displayAttachment) {
 		if role, _ := t["role"].(string); role == "user" {
 			arr := make([]map[string]any, 0, len(atts))
 			for _, a := range atts {
-				arr = append(arr, map[string]any{"url": a.URL, "filename": a.Filename})
+				item := map[string]any{"url": a.URL, "filename": a.Filename}
+				if a.AttachmentID > 0 {
+					item["attachment_id"] = a.AttachmentID
+				}
+				arr = append(arr, item)
 			}
 			t["attachments"] = arr
 			return

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -541,7 +542,7 @@ func displayAttachmentsFromEntities(atts []*model.AgentAttachment) []displayAtta
 	out := make([]displayAttachment, 0, len(atts))
 	for _, a := range atts {
 		if a != nil && a.URL != "" {
-			out = append(out, displayAttachment{URL: a.URL, Filename: a.Filename})
+			out = append(out, displayAttachment{AttachmentID: a.ID, URL: a.URL, Filename: a.Filename})
 		}
 	}
 	return out
@@ -826,30 +827,124 @@ func (s *StudentRunService) RunStream(ctx context.Context, userID uint, req Crea
 	return s.runner.RunStream(ctx, runReq, runID, ch)
 }
 
-// turnsToHistoryMessages converts persisted [{role,content}] transcript turns
-// into user/assistant schema.Messages (tool_group / system roles dropped — v1
-// history is text-only). Shared by loadSessionHistory (multi-run) and the
-// resume path (a single waiting run's pre-yield transcript, HW-33).
+// turnsToHistoryMessages converts persisted transcript turns into user/assistant
+// schema.Messages. Tool/system roles are dropped, but user-turn attachment chips
+// are rebuilt into model-facing file_read references so later turns can still
+// use a file uploaded earlier in the same session.
 func turnsToHistoryMessages(turns []map[string]any) []*schema.Message {
 	out := make([]*schema.Message, 0, len(turns))
 	for _, turn := range turns {
 		content := strings.TrimSpace(historyTurnText(turn["content"]))
-		if content == "" {
-			continue
-		}
 		role, _ := turn["role"].(string)
 		var sr schema.RoleType
 		switch role {
 		case "user":
 			sr = schema.User
+			content = historyUserContentWithAttachments(content, historyTurnAttachments(turn["attachments"]))
 		case "assistant":
 			sr = schema.Assistant
 		default:
 			continue
 		}
+		if content == "" {
+			continue
+		}
 		out = append(out, &schema.Message{Role: sr, Content: content})
 	}
 	return out
+}
+
+func historyUserContentWithAttachments(content string, atts []displayAttachment) string {
+	if len(atts) == 0 {
+		return content
+	}
+	var b strings.Builder
+	if strings.TrimSpace(content) != "" {
+		b.WriteString(strings.TrimSpace(content))
+		b.WriteString("\n\n")
+	}
+	b.WriteString("【会话附件】用户此前在这一轮上传了以下附件，后续对话仍可引用。需要查看附件内容时，请调用 file_read 工具读取（优先使用 attachment_id；没有则使用 file_url）：\n")
+	for _, att := range atts {
+		if att.AttachmentID == 0 && att.URL == "" {
+			continue
+		}
+		name := att.Filename
+		if name == "" && att.URL != "" {
+			name = filenameFromURL(att.URL)
+		}
+		b.WriteString("- ")
+		if name != "" {
+			b.WriteString(name)
+			b.WriteString("；")
+		}
+		if att.AttachmentID > 0 {
+			b.WriteString("attachment_id: ")
+			b.WriteString(strconv.FormatUint(att.AttachmentID, 10))
+			b.WriteString("；")
+		}
+		if att.URL != "" {
+			b.WriteString("file_url: ")
+			b.WriteString(att.URL)
+		}
+		b.WriteString("\n")
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func historyTurnAttachments(raw any) []displayAttachment {
+	items, ok := raw.([]any)
+	if !ok || len(items) == 0 {
+		return nil
+	}
+	out := make([]displayAttachment, 0, len(items))
+	for _, item := range items {
+		m, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		urlValue, _ := m["url"].(string)
+		filenameValue, _ := m["filename"].(string)
+		att := displayAttachment{
+			AttachmentID: historyAttachmentID(m["attachment_id"]),
+			URL:          strings.TrimSpace(urlValue),
+			Filename:     strings.TrimSpace(filenameValue),
+		}
+		if att.AttachmentID == 0 && att.URL == "" {
+			continue
+		}
+		out = append(out, att)
+	}
+	return out
+}
+
+func historyAttachmentID(raw any) uint64 {
+	switch v := raw.(type) {
+	case float64:
+		if v > 0 {
+			return uint64(v)
+		}
+	case int:
+		if v > 0 {
+			return uint64(v)
+		}
+	case int64:
+		if v > 0 {
+			return uint64(v)
+		}
+	case uint64:
+		return v
+	case json.Number:
+		n, err := strconv.ParseUint(v.String(), 10, 64)
+		if err == nil {
+			return n
+		}
+	case string:
+		n, err := strconv.ParseUint(strings.TrimSpace(v), 10, 64)
+		if err == nil {
+			return n
+		}
+	}
+	return 0
 }
 
 // loadSessionHistory loads prior completed turns of the same session and converts
@@ -860,8 +955,9 @@ func turnsToHistoryMessages(turns []map[string]any) []*schema.Message {
 //
 // Design choices (v1):
 //   - excludeRunID drops the just-created row for the current turn (its messages=[]).
-//   - Only user/assistant text turns are kept; tool_call/tool_result detail is
-//     dropped to avoid OAI tool-pair protocol errors (see MEMORY oai-function-calling).
+//   - Only user/assistant turns are kept. Tool_call/tool_result detail is
+//     dropped to avoid OAI tool-pair protocol errors (see MEMORY oai-function-calling),
+//     while user attachment refs are retained as file_read instructions.
 //   - The newest maxHistoryRuns runs are scanned; total content is capped at
 //     maxHistoryChars, trimming the OLDEST messages first to protect the window.
 //   - Fail-open: any error returns nil so a history-load failure never blocks the run.
