@@ -779,6 +779,29 @@ func TestLoadSessionHistory_ReturnsPriorTurnsChronological(t *testing.T) {
 	}
 }
 
+func TestLoadSessionHistory_CarriesPriorAttachmentReferences(t *testing.T) {
+	runStore := newLifecycleRunStore()
+	svc := NewStudentRunService(nil, runStore, nil, nil, nil, nil)
+
+	const sid = "session-attachments"
+	const attURL = "https://bucket.cos.ap-chengdu.myqcloud.com/agent-attachments/123/customer.docx"
+	runStore.runs[1] = &model.AgentRun{
+		ID: 1, SessionID: sid, StartedAt: time.Now(), Status: "terminated",
+		Messages: datatypes.JSON([]byte(`[
+			{"role":"user","content":"","attachments":[{"url":"` + attURL + `","filename":"customer.docx"}]},
+			{"role":"assistant","content":"我会先读取附件"}
+		]`)),
+	}
+
+	msgs := svc.loadSessionHistory(context.Background(), sid, 0)
+	require.NotEmpty(t, msgs, "attachment-only prior turns must stay in model history")
+	require.Equal(t, schema.User, msgs[0].Role)
+	assert.Contains(t, msgs[0].Content, "file_read")
+	assert.Contains(t, msgs[0].Content, "file_url")
+	assert.Contains(t, msgs[0].Content, attURL)
+	assert.Contains(t, msgs[0].Content, "customer.docx")
+}
+
 // TestLoadSessionHistory_EmptySessionID returns nil (fail-open / first turn).
 func TestLoadSessionHistory_EmptySessionID(t *testing.T) {
 	svc := NewStudentRunService(nil, newLifecycleRunStore(), nil, nil, nil, nil)
