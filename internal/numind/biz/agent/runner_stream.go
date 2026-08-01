@@ -264,6 +264,7 @@ func (r *agentRunner) consumeEinoStream(
 		// Classify the message by role.
 		switch msg.Role {
 		case schema.Assistant:
+			skipAggregateReasoning := isTerminalToolCallAggregateReasoning(msg, currentReason.String())
 			// Text delta. Accumulate ALWAYS (terminal/stash/RunResult depend on
 			// it); only emit the echo when the live checker is NOT pumping (T4 #4).
 			if msg.Content != "" {
@@ -277,7 +278,7 @@ func (r *agentRunner) consumeEinoStream(
 			}
 			// Reasoning delta (thinking models). Accumulate ALWAYS; only emit the
 			// echo when the live checker is NOT pumping (T4 #4).
-			if msg.ReasoningContent != "" {
+			if msg.ReasoningContent != "" && !skipAggregateReasoning {
 				currentReason.WriteString(msg.ReasoningContent)
 				if !checkerActive {
 					emit(stream.EventReasoningDelta, stream.ReasoningDeltaPayload{

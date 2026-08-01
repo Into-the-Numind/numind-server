@@ -935,6 +935,8 @@ func streamScanToolCallChecker(ctx context.Context, sr *schema.StreamReader[*sch
 			hasToolCalls = true
 		}
 
+		skipAggregateReasoning := isTerminalToolCallAggregateReasoning(msg, currentReason.String())
+
 		// 实时泵送 TokenDelta / ReasoningDelta 到共享 SSE 通道，彻底突破 Eino 缓冲瓶颈
 		if hasState && msg.Role == schema.Assistant {
 			if msg.Content != "" {
@@ -944,7 +946,7 @@ func streamScanToolCallChecker(ctx context.Context, sr *schema.StreamReader[*sch
 					Text:      msg.Content,
 				})
 			}
-			if msg.ReasoningContent != "" {
+			if msg.ReasoningContent != "" && !skipAggregateReasoning {
 				currentReason.WriteString(msg.ReasoningContent)
 				emit(stream.EventReasoningDelta, stream.ReasoningDeltaPayload{
 					MessageID: currentMsgID,

@@ -75,6 +75,16 @@ func toolCallArgsDeltaFromExtra(extra map[string]any) *aiservice.ToolCallArgsDel
 	return ad
 }
 
+func isTerminalToolCallAggregateReasoning(msg *schema.Message, currentReasoning string) bool {
+	return msg != nil &&
+		msg.ResponseMeta != nil &&
+		msg.ResponseMeta.FinishReason != "" &&
+		len(msg.ToolCalls) > 0 &&
+		msg.ReasoningContent != "" &&
+		currentReasoning != "" &&
+		msg.ReasoningContent == currentReasoning
+}
+
 // chatFn is the package-level seam used by tests to mock aiservice.Chat without
 // starting a live gateway. Production code leaves this pointing at aiservice.Chat.
 var chatFn = aiservice.Chat
@@ -515,6 +525,7 @@ func wrapChannelAsStreamReader(ch <-chan aiservice.ChatChunk, onFinalUsage func(
 	go func() {
 		defer sw.Close()
 		firstSeen := false
+		var accumulatedReasoning strings.Builder
 		for chunk := range ch {
 			if !firstSeen {
 				firstSeen = true
@@ -528,6 +539,9 @@ func wrapChannelAsStreamReader(ch <-chan aiservice.ChatChunk, onFinalUsage func(
 			if chunk.Err != nil {
 				sw.Send(nil, chunk.Err)
 				return
+			}
+			if chunk.ReasoningDelta != "" {
+				accumulatedReasoning.WriteString(chunk.ReasoningDelta)
 			}
 
 			// Terminal chunk carries finish_reason + assembled tool_calls.
@@ -552,6 +566,11 @@ func wrapChannelAsStreamReader(ch <-chan aiservice.ChatChunk, onFinalUsage func(
 					finalMsg.ResponseMeta = &schema.ResponseMeta{FinishReason: chunk.FinishReason}
 				}
 				if len(chunk.ToolCalls) > 0 {
+					// Thinking models stream reasoning before their terminal
+					// tool_calls chunk. The next provider request must replay
+					// the assistant message as reasoning_content + tool_calls,
+					// not as a tool_calls-only turn.
+					finalMsg.ReasoningContent = accumulatedReasoning.String()
 					finalMsg.ToolCalls = make([]schema.ToolCall, 0, len(chunk.ToolCalls))
 					for _, tc := range chunk.ToolCalls {
 						finalMsg.ToolCalls = append(finalMsg.ToolCalls, schema.ToolCall{
