@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"io"
 	"testing"
 
 	"github.com/cloudwego/eino/schema"
@@ -330,6 +331,53 @@ func TestConvertToAiserviceRequest_PropagatesReasoningContent(t *testing.T) {
 	}
 	if req.Messages[0].ReasoningContent != "User asked for news; I should call web_search." {
 		t.Errorf("ReasoningContent: got %q, want the thinking trace (root cause: DMXAPI 400 on missing field)", req.Messages[0].ReasoningContent)
+	}
+}
+
+// TestWrapChannelAsStreamReader_AttachesReasoningToTerminalToolCallMessage
+// reproduces the prod run 119 failure: deepseek-v4-pro streams reasoning first
+// and emits tool_calls only on the terminal chunk. The assistant message that
+// requests the tool must carry the same reasoning_content when Eino replays the
+// next turn, or DMXAPI rejects the tool-result follow-up with HTTP 400.
+func TestWrapChannelAsStreamReader_AttachesReasoningToTerminalToolCallMessage(t *testing.T) {
+	ch := make(chan aiservice.ChatChunk, 4)
+	ch <- aiservice.ChatChunk{ReasoningDelta: "I need to read the uploaded PDF. ", IsFinal: false}
+	ch <- aiservice.ChatChunk{ReasoningDelta: "Call file_read now.", IsFinal: false}
+	ch <- aiservice.ChatChunk{
+		IsFinal:      true,
+		FinishReason: "tool_calls",
+		ToolCalls: []aiservice.ToolCall{
+			{
+				ID:   "call_file_read",
+				Type: "function",
+				Function: aiservice.ToolCallFunction{
+					Name:      "file_read",
+					Arguments: `{"attachment_id":119}`,
+				},
+			},
+		},
+	}
+	close(ch)
+
+	sr := wrapChannelAsStreamReader(ch, nil)
+	var terminal *schema.Message
+	for {
+		msg, err := sr.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Recv: %v", err)
+		}
+		if len(msg.ToolCalls) > 0 {
+			terminal = msg
+		}
+	}
+	if terminal == nil {
+		t.Fatal("expected terminal tool-call message")
+	}
+	if terminal.ReasoningContent != "I need to read the uploaded PDF. Call file_read now." {
+		t.Errorf("terminal reasoning_content = %q, want accumulated reasoning attached to tool_calls", terminal.ReasoningContent)
 	}
 }
 

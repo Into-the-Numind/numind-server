@@ -200,6 +200,32 @@ func TestStreaming_Reasoning_NoDoubleEmission(t *testing.T) {
 	assert.Len(t, allEventsOfType(evs, stream.EventStepDone), 1)
 }
 
+// TestStreaming_ToolCallAggregateReasoning_NoDoubleEmission pins the prod run
+// 119 contract: the terminal assistant tool-call message may carry accumulated
+// reasoning_content for provider round-trip, but that aggregate is protocol data,
+// not a new visible reasoning delta. The live checker must not echo it twice.
+func TestStreaming_ToolCallAggregateReasoning_NoDoubleEmission(t *testing.T) {
+	msgs := []*schema.Message{
+		{Role: schema.Assistant, ReasoningContent: "I need to inspect the PDF. "},
+		{Role: schema.Assistant, ReasoningContent: "Call file_read."},
+		{
+			Role:             schema.Assistant,
+			ReasoningContent: "I need to inspect the PDF. Call file_read.",
+			ToolCalls: []schema.ToolCall{
+				{ID: "tc1", Type: "function", Function: schema.FunctionCall{Name: "file_read", Arguments: `{"attachment_id":119}`}},
+			},
+			ResponseMeta: &schema.ResponseMeta{FinishReason: "tool_calls"},
+		},
+	}
+
+	evs := runCheckerThenConsume(t, msgs)
+
+	assert.Len(t, allEventsOfType(evs, stream.EventReasoningDelta), 2,
+		"aggregate reasoning on terminal tool-call message is for provider replay only and must not be re-emitted")
+	assert.Len(t, allEventsOfType(evs, stream.EventAssistantMessage), 1)
+	assert.Len(t, allEventsOfType(evs, stream.EventStepDone), 1)
+}
+
 // TestConsumeEinoStream_NoChecker_StillEmitsEchoes pins the fallback: when no
 // live checker is active (hasState=false OR state.Ch==nil), consumeEinoStream
 // must STILL emit the per-step echoes itself, so a hypothetical no-checker path
