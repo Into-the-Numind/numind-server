@@ -18,6 +18,14 @@ type supervisedRunEventObservation struct {
 	lastSeq      uint64
 }
 
+type supervisedRunAdmission struct {
+	runID     uint64
+	bgCtx     context.Context
+	runnerCtx context.Context
+	cancel    context.CancelFunc
+	done      chan struct{}
+}
+
 // StartPreparedStreamRun starts a prepared stream run on a detached supervised
 // runner and publishes emitted events into the run event broker best-effort.
 func (s *StudentRunService) StartPreparedStreamRun(prepared *PreparedStreamRun) bool {
@@ -29,21 +37,25 @@ func (s *StudentRunService) StartPreparedStreamRun(prepared *PreparedStreamRun) 
 	})
 }
 
-// StartPreparedAnswerStream validates and persists a user answer synchronously,
-// then resumes the streaming run on a detached supervised runner.
+// StartPreparedAnswerStream atomically admits an answer-stream resume, validates
+// and persists the user answer synchronously, then resumes the streaming run on
+// a detached supervised runner.
 func (s *StudentRunService) StartPreparedAnswerStream(ctx context.Context, userID uint, runID uint64, req AnswerRequest) (bool, error) {
-	if s == nil || runID == 0 || (s.streamExecutions != nil && s.streamExecutions.IsActive(runID)) {
+	admission, ok := s.admitSupervisedRun(runID, userID)
+	if !ok {
 		return false, nil
 	}
 
 	runReq, err := s.validateAndPersistAnswer(ctx, userID, runID, req)
 	if err != nil {
+		s.releaseSupervisedRunAdmission(admission)
 		return false, err
 	}
-	return s.startSupervisedRun(runID, userID, func(runCtx context.Context, ch chan<- stream.Event) (*RunResult, error) {
+	s.startAdmittedSupervisedRun(admission, func(runCtx context.Context, ch chan<- stream.Event) (*RunResult, error) {
 		go s.forwardNarration(runID)
 		return s.runner.RunStream(runCtx, runReq, runID, ch)
-	}), nil
+	})
+	return true, nil
 }
 
 func (s *StudentRunService) startSupervisedRun(
@@ -55,37 +67,76 @@ func (s *StudentRunService) startSupervisedRun(
 		return false
 	}
 
+	admission, ok := s.admitSupervisedRun(runID, userID)
+	if !ok {
+		return false
+	}
+	s.startAdmittedSupervisedRun(admission, run)
+	return true
+}
+
+func (s *StudentRunService) admitSupervisedRun(runID uint64, userID uint) (*supervisedRunAdmission, bool) {
+	if s == nil || s.streamExecutions == nil || runID == 0 {
+		return nil, false
+	}
+
 	done := make(chan struct{})
 	bgCtx := middleware.NewContextWithUserID(context.Background(), userID)
 	runnerCtx, cancel := context.WithCancel(bgCtx)
 	if !s.streamExecutions.Start(runID, cancel, done) {
 		cancel()
-		return false
+		return nil, false
 	}
 
+	return &supervisedRunAdmission{
+		runID:     runID,
+		bgCtx:     bgCtx,
+		runnerCtx: runnerCtx,
+		cancel:    cancel,
+		done:      done,
+	}, true
+}
+
+func (s *StudentRunService) releaseSupervisedRunAdmission(admission *supervisedRunAdmission) {
+	if s == nil || admission == nil {
+		return
+	}
+	if admission.cancel != nil {
+		admission.cancel()
+	}
+	if s.streamExecutions != nil {
+		s.streamExecutions.Finish(admission.runID)
+	}
+	if admission.done != nil {
+		close(admission.done)
+	}
+}
+
+func (s *StudentRunService) startAdmittedSupervisedRun(
+	admission *supervisedRunAdmission,
+	run func(context.Context, chan<- stream.Event) (*RunResult, error),
+) {
 	go func() {
-		defer close(done)
-		defer s.streamExecutions.Finish(runID)
-		defer cancel()
+		defer close(admission.done)
+		defer s.streamExecutions.Finish(admission.runID)
+		defer admission.cancel()
 
 		events := make(chan stream.Event, supervisedRunEventChanCap)
 		drained := make(chan struct{})
 		observedEvents := make(chan supervisedRunEventObservation, 1)
 		go func() {
 			defer close(drained)
-			observedEvents <- s.publishDetachedRunEvents(bgCtx, runID, events)
+			observedEvents <- s.publishDetachedRunEvents(admission.bgCtx, admission.runID, events)
 		}()
 
-		_, runErr := runSupervisedStream(runnerCtx, events, run)
+		_, runErr := runSupervisedStream(admission.runnerCtx, events, run)
 		close(events)
 		<-drained
 		observation := <-observedEvents
 		if runErr != nil && !observation.terminalSeen {
-			s.publishDetachedRunFailure(bgCtx, runID, observation, runErr)
+			s.publishDetachedRunFailure(admission.bgCtx, admission.runID, observation, runErr)
 		}
 	}()
-
-	return true
 }
 
 func runSupervisedStream(

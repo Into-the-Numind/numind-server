@@ -269,6 +269,64 @@ func TestStartPreparedAnswerStream_ActiveExecutionSkipsPersistenceAndRunner(t *t
 	assert.NoError(t, activeCtx.Err(), "preflight must not cancel the existing active execution")
 }
 
+func TestStartPreparedAnswerStream_ConcurrentDuplicateDoesNotPersistLoser(t *testing.T) {
+	const userID = uint(42)
+	rs := newAnswerRunStore()
+	runID := seedAnswerRun(rs, userID, string(TerminalWaitingForUserChoice))
+	releaseRunner := make(chan struct{})
+	runner := newSupervisedStreamRunner([]stream.Event{
+		mustSupervisorEvent(t, stream.EventTerminal, runID, 1),
+	}, nil)
+	runner.blockBeforeEvents = releaseRunner
+	svc := NewStudentRunService(runner, rs, nil, nil, nil, nil)
+	req := AnswerRequest{Answers: map[string]AnswerItem{
+		"Which region?": {Selected: []string{"北"}},
+	}}
+
+	type answerStreamResult struct {
+		ok  bool
+		err error
+	}
+	ready := make(chan struct{}, 2)
+	start := make(chan struct{})
+	results := make(chan answerStreamResult, 2)
+	for i := 0; i < 2; i++ {
+		go func() {
+			ready <- struct{}{}
+			<-start
+			ok, err := svc.StartPreparedAnswerStream(context.Background(), userID, runID, req)
+			results <- answerStreamResult{ok: ok, err: err}
+		}()
+	}
+
+	<-ready
+	<-ready
+	close(start)
+	got := []answerStreamResult{<-results, <-results}
+
+	okCount := 0
+	falseNilCount := 0
+	for _, res := range got {
+		require.NoError(t, res.err)
+		if res.ok {
+			okCount++
+			continue
+		}
+		falseNilCount++
+	}
+	assert.Equal(t, 1, okCount, "exactly one concurrent caller should admit the supervised resume")
+	assert.Equal(t, 1, falseNilCount, "the duplicate caller should get ok=false, err=nil")
+	assert.Len(t, rs.answerAndClearCalls, 1, "duplicate caller must not persist a second answer")
+
+	select {
+	case <-runner.started:
+	case <-time.After(time.Second):
+		t.Fatal("winning supervised answer resume runner did not start")
+	}
+	close(releaseRunner)
+	waitSupervisorRunnerDone(t, runner)
+}
+
 func TestStartPreparedStreamRun_PublishFailureDoesNotStopRunner(t *testing.T) {
 	const userID = uint(7)
 	runner := newSupervisedStreamRunner(nil, nil)
