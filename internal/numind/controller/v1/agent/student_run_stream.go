@@ -86,11 +86,10 @@ func (h *StudentRunController) CreateStream(c *gin.Context) {
 		return
 	}
 
-	if !h.runSvc.StartPreparedStreamRun(prepared) {
-		writeStreamAlreadyAttached(c, prepared.RunID)
+	_ = h.runSvc.StartPreparedStreamRun(prepared)
+	if switchToSSE(c) != nil {
 		return
 	}
-
 	observeRunEvents(c, h.runSvc, user.ID, prepared.RunID, "", &observerFallbackStart{
 		runID:     prepared.RunID,
 		sessionID: prepared.SessionID,
@@ -126,10 +125,13 @@ func (h *StudentRunController) AnswerStream(c *gin.Context) {
 		return
 	}
 	if !started {
-		writeStreamAlreadyAttached(c, runID)
+		subscribeThenObserveRunEvents(c, h.runSvc, user.ID, runID, "", nil)
 		return
 	}
 
+	if switchToSSE(c) != nil {
+		return
+	}
 	observeRunEvents(c, h.runSvc, user.ID, runID, "", nil)
 }
 
@@ -147,18 +149,34 @@ func (h *StudentRunController) SubscribeEvents(c *gin.Context) {
 		return
 	}
 
-	observeRunEvents(c, h.runSvc, user.ID, runID, c.Query("after"), nil)
-}
-
-func writeStreamAlreadyAttached(c *gin.Context, runID uint64) {
-	c.JSON(http.StatusConflict, gin.H{
-		"code":    errno.ErrAgentStreamAlreadyAttached.Code,
-		"message": errno.ErrAgentStreamAlreadyAttached.Message,
-		"data":    gin.H{"run_id": runID},
-	})
+	subscribeThenObserveRunEvents(c, h.runSvc, user.ID, runID, c.Query("after"), nil)
 }
 
 func observeRunEvents(
+	c *gin.Context,
+	svc streamingRunSvc,
+	userID uint,
+	runID uint64,
+	after string,
+	fallback *observerFallbackStart,
+) {
+	events, err := svc.SubscribeRunEvents(c.Request.Context(), userID, runID, after)
+	if err != nil {
+		if errors.Is(err, stream.ErrRunEventBrokerUnavailable) && fallback != nil {
+			_ = writeObserverFallbackStart(c, fallback.runID, fallback.sessionID)
+			return
+		}
+		if !errors.Is(err, context.Canceled) {
+			log.C(c.Request.Context()).Warnw("observeRunEvents: subscribe after SSE failed",
+				"run_id", runID, "error", err)
+		}
+		return
+	}
+
+	writePublishedRunEvents(c, runID, events)
+}
+
+func subscribeThenObserveRunEvents(
 	c *gin.Context,
 	svc streamingRunSvc,
 	userID uint,
@@ -178,7 +196,6 @@ func observeRunEvents(
 		writeRunEventSubscribeError(c, err)
 		return
 	}
-
 	if switchToSSE(c) != nil {
 		return
 	}
@@ -233,7 +250,7 @@ func writePublishedRunEvents(c *gin.Context, runID uint64, events <-chan stream.
 	for {
 		select {
 		case <-ctx.Done():
-			disconnectReason = "client_disconnect"
+			disconnectReason = "observer_disconnect"
 			return
 		case <-pingTicker.C:
 			if _, err := fmt.Fprint(c.Writer, ":ping\n\n"); err != nil {
@@ -306,19 +323,5 @@ func writeObserverFallbackStart(c *gin.Context, runID uint64, sessionID string) 
 }
 
 func isFinalPublishedEvent(event stream.Event) bool {
-	if event.Type == stream.EventError {
-		return true
-	}
-	return isFinalPublishedTerminal(event)
-}
-
-func isFinalPublishedTerminal(event stream.Event) bool {
-	if event.Type != stream.EventTerminal {
-		return false
-	}
-	var payload stream.TerminalPayload
-	if err := json.Unmarshal(event.Data, &payload); err != nil {
-		return true
-	}
-	return payload.Reason != string(agentbiz.TerminalWaitingForUserChoice)
+	return event.Type == stream.EventTerminal || event.Type == stream.EventError
 }

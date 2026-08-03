@@ -99,6 +99,95 @@ func TestAnswerStream_ValidationErrorReturnsJSONBeforeSSE(t *testing.T) {
 	}
 }
 
+func TestAnswerStream_StartFalseSameUserObserves(t *testing.T) {
+	events := make(chan stream.PublishedEvent, 1)
+	events <- publishedEvent(t, "2000-1", stream.EventTerminal, 123, 1)
+	close(events)
+	svc := newObserverStreamSvc()
+	svc.answerStartOK = false
+	svc.events = events
+	ctrl := &testStreamController{svc: svc}
+
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.POST("/v1/agent-runs/:id/answer-stream", ctrl.AnswerStream)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, newAnswerStreamRequest())
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected observer SSE 200, got %d; body: %s", w.Code, w.Body.String())
+	}
+	if strings.HasPrefix(w.Body.String(), `{"code":"FailedOperation.AgentStreamAlreadyAttached"`) {
+		t.Fatalf("started=false must observe instead of returning old 409; body: %s", w.Body.String())
+	}
+	frames := parseSSEFrames(w.Body.String())
+	if len(frames) != 1 || frames[0].RunID != 123 {
+		t.Fatalf("expected one observed terminal for run 123, got %+v\nbody:\n%s", frames, w.Body.String())
+	}
+}
+
+func TestAnswerStream_StartFalseForeignSafeSurfaceDoesNot409(t *testing.T) {
+	svc := newObserverStreamSvc()
+	svc.answerStartOK = false
+	svc.subscribeErr = errno.ErrAgentRunNotFound
+	ctrl := &testStreamController{svc: svc}
+
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.POST("/v1/agent-runs/:id/answer-stream", ctrl.AnswerStream)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, newAnswerStreamRequest())
+
+	if w.Code == http.StatusConflict {
+		t.Fatalf("started=false foreign/unknown run must not leak 409; body: %s", w.Body.String())
+	}
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected safe 404 JSON, got %d; body: %s", w.Code, w.Body.String())
+	}
+	if strings.HasPrefix(w.Header().Get("Content-Type"), "text/event-stream") {
+		t.Fatalf("safe-surface error must be JSON before SSE; body: %s", w.Body.String())
+	}
+	_, _, _, _, subscribeCalls := svc.snapshot()
+	if subscribeCalls != 1 {
+		t.Fatalf("SubscribeRunEvents should decide ownership for started=false, got %d calls", subscribeCalls)
+	}
+}
+
+func TestAnswerStream_SuccessFlushesBeforeSubscribe(t *testing.T) {
+	svc := newObserverStreamSvc()
+	svc.subscribeBlock = make(chan struct{})
+	svc.subscribeEntered = make(chan struct{}, 1)
+	server := newAnswerStreamServer(svc)
+	defer server.Close()
+
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/v1/agent-runs/123/answer-stream", newAnswerStreamRequest().Body)
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := streamTestHTTPClient().Do(req)
+	if err != nil {
+		t.Fatalf("client.Do should receive SSE headers before SubscribeRunEvents returns: %v", err)
+	}
+	defer resp.Body.Close()
+
+	buf := make([]byte, 16)
+	n, err := resp.Body.Read(buf)
+	if err != nil {
+		t.Fatalf("read first SSE bytes: %v", err)
+	}
+	if n == 0 || buf[0] != ':' {
+		t.Fatalf("expected initial SSE comment before subscribe completes, n=%d chunk=%q", n, buf[:n])
+	}
+	select {
+	case <-svc.subscribeEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("SubscribeRunEvents was not attempted after first-byte flush")
+	}
+}
+
 func TestAnswerStream_DisconnectDoesNotCancelSupervisedResume(t *testing.T) {
 	events := make(chan stream.PublishedEvent)
 	svc := newObserverStreamSvc()
@@ -113,7 +202,7 @@ func TestAnswerStream_DisconnectDoesNotCancelSupervisedResume(t *testing.T) {
 		t.Fatalf("build request: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := streamTestHTTPClient().Do(req)
 	if err != nil {
 		t.Fatalf("client.Do: %v", err)
 	}

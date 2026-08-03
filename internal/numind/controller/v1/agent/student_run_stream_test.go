@@ -48,9 +48,11 @@ type observerStreamSvc struct {
 
 	order []string
 
-	started       chan struct{}
-	answerStarted chan struct{}
-	subscribeDone chan struct{}
+	started          chan struct{}
+	answerStarted    chan struct{}
+	subscribeBlock   <-chan struct{}
+	subscribeEntered chan struct{}
+	subscribeDone    chan struct{}
 }
 
 func newObserverStreamSvc() *observerStreamSvc {
@@ -122,6 +124,19 @@ func (s *observerStreamSvc) SubscribeRunEvents(ctx context.Context, _ uint, _ ui
 	s.mu.Lock()
 	s.subscribeCalls++
 	s.mu.Unlock()
+	if s.subscribeEntered != nil {
+		select {
+		case s.subscribeEntered <- struct{}{}:
+		default:
+		}
+	}
+	if s.subscribeBlock != nil {
+		select {
+		case <-s.subscribeBlock:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
 	if s.subscribeErr != nil {
 		return nil, s.subscribeErr
 	}
@@ -174,8 +189,8 @@ func (h *testStreamController) CreateStream(c *gin.Context) {
 		core.WriteResponse(c, err, nil)
 		return
 	}
-	if !h.svc.StartPreparedStreamRun(prepared) {
-		writeStreamAlreadyAttached(c, prepared.RunID)
+	_ = h.svc.StartPreparedStreamRun(prepared)
+	if switchToSSE(c) != nil {
 		return
 	}
 	observeRunEvents(c, h.svc, user.ID, prepared.RunID, "", &observerFallbackStart{
@@ -202,7 +217,10 @@ func (h *testStreamController) AnswerStream(c *gin.Context) {
 		return
 	}
 	if !started {
-		writeStreamAlreadyAttached(c, runID)
+		subscribeThenObserveRunEvents(c, h.svc, user.ID, runID, "", nil)
+		return
+	}
+	if switchToSSE(c) != nil {
 		return
 	}
 	observeRunEvents(c, h.svc, user.ID, runID, "", nil)
@@ -227,11 +245,26 @@ func newStreamServer(svc *observerStreamSvc) *httptest.Server {
 	return httptest.NewServer(r)
 }
 
+func streamTestHTTPClient() *http.Client {
+	return &http.Client{Timeout: 2 * time.Second}
+}
+
 func publishedEvent(t *testing.T, cursor string, eventType stream.EventType, runID, seq uint64) stream.PublishedEvent {
 	t.Helper()
 	ev, err := stream.Encode(eventType, nil, seq, runID, 0)
 	if err != nil {
 		t.Fatalf("encode event: %v", err)
+	}
+	return stream.PublishedEvent{Cursor: cursor, Event: ev}
+}
+
+func publishedTerminalEvent(t *testing.T, cursor string, runID, seq uint64, reason agentbiz.TerminalReason) stream.PublishedEvent {
+	t.Helper()
+	ev, err := stream.Encode(stream.EventTerminal, stream.TerminalPayload{
+		Reason: string(reason),
+	}, seq, runID, 0)
+	if err != nil {
+		t.Fatalf("encode terminal event: %v", err)
 	}
 	return stream.PublishedEvent{Cursor: cursor, Event: ev}
 }
@@ -296,10 +329,14 @@ func TestCreateStream_HappyPath(t *testing.T) {
 	}
 }
 
-func TestCreateStream_409WhenLockNotAcquired(t *testing.T) {
+func TestCreateStream_StartFalseStillObservesAndDoesNot409(t *testing.T) {
+	events := make(chan stream.PublishedEvent, 1)
+	events <- publishedEvent(t, "1000-1", stream.EventTerminal, 77, 1)
+	close(events)
 	svc := newObserverStreamSvc()
 	svc.prepared.RunID = 77
 	svc.startOK = false
+	svc.events = events
 	ctrl := &testStreamController{svc: svc}
 
 	gin.SetMode(gin.TestMode)
@@ -309,22 +346,15 @@ func TestCreateStream_409WhenLockNotAcquired(t *testing.T) {
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, newStreamRequest(t))
 
-	if w.Code != http.StatusConflict {
-		t.Fatalf("expected 409, got %d; body: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected observer SSE 200, got %d; body: %s", w.Code, w.Body.String())
 	}
-	var body map[string]any
-	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
-		t.Fatalf("unmarshal 409 body: %v", err)
+	if _, _, _, _, subscribeCalls := svc.snapshot(); subscribeCalls != 1 {
+		t.Fatalf("SubscribeRunEvents should be called when execution is already active, got %d", subscribeCalls)
 	}
-	dataMap, ok := body["data"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected data object in 409 response, got: %v", body)
-	}
-	if got := uint64(dataMap["run_id"].(float64)); got != 77 {
-		t.Fatalf("expected data.run_id=77, got %d", got)
-	}
-	if _, _, _, _, subscribeCalls := svc.snapshot(); subscribeCalls != 0 {
-		t.Fatalf("SubscribeRunEvents should not be called when start is rejected")
+	frames := parseSSEFrames(w.Body.String())
+	if len(frames) != 1 || frames[0].RunID != 77 {
+		t.Fatalf("expected one observed terminal for run 77, got %+v\nbody:\n%s", frames, w.Body.String())
 	}
 }
 
@@ -342,7 +372,7 @@ func TestCreateStream_ClientDisconnectDoesNotCancelSupervisedRun(t *testing.T) {
 		t.Fatalf("build request: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := streamTestHTTPClient().Do(req)
 	if err != nil {
 		t.Fatalf("client.Do: %v", err)
 	}
@@ -379,8 +409,8 @@ func TestCreateStream_ClientDisconnectBeforeFirstWriteStillStartsPreparedRun(t *
 	if startCalls != 1 {
 		t.Fatalf("StartPreparedStreamRun must run before the first SSE write, got %d calls", startCalls)
 	}
-	if subscribeCalls != 1 {
-		t.Fatalf("SubscribeRunEvents should have been attempted after supervised start, got %d calls", subscribeCalls)
+	if subscribeCalls != 0 {
+		t.Fatalf("SubscribeRunEvents should not run when first SSE write fails, got %d calls", subscribeCalls)
 	}
 }
 
@@ -398,6 +428,39 @@ func TestCreateStream_StartsPreparedRunBeforeObserving(t *testing.T) {
 	want := []string{"prepare", "start", "subscribe"}
 	if strings.Join(order, ",") != strings.Join(want, ",") {
 		t.Fatalf("expected call order %v, got %v", want, order)
+	}
+}
+
+func TestCreateStream_SuccessFlushesBeforeSubscribe(t *testing.T) {
+	svc := newObserverStreamSvc()
+	svc.subscribeBlock = make(chan struct{})
+	svc.subscribeEntered = make(chan struct{}, 1)
+	server := newStreamServer(svc)
+	defer server.Close()
+
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/v1/agent-runs/stream", newStreamRequest(t).Body)
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := streamTestHTTPClient().Do(req)
+	if err != nil {
+		t.Fatalf("client.Do should receive SSE headers before SubscribeRunEvents returns: %v", err)
+	}
+	defer resp.Body.Close()
+
+	buf := make([]byte, 16)
+	n, err := resp.Body.Read(buf)
+	if err != nil {
+		t.Fatalf("read first SSE bytes: %v", err)
+	}
+	if n == 0 || buf[0] != ':' {
+		t.Fatalf("expected initial SSE comment before subscribe completes, n=%d chunk=%q", n, buf[:n])
+	}
+	select {
+	case <-svc.subscribeEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("SubscribeRunEvents was not attempted after first-byte flush")
 	}
 }
 
@@ -439,7 +502,7 @@ func TestCreateStream_FirstByteFlushedBeforePublishedEvent(t *testing.T) {
 		t.Fatalf("build request: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := streamTestHTTPClient().Do(req)
 	if err != nil {
 		t.Fatalf("client.Do: %v", err)
 	}
@@ -485,6 +548,31 @@ func TestCreateStream_ErrorEventTerminatesLoop(t *testing.T) {
 	}
 	if frames[1].Type != stream.EventError {
 		t.Fatalf("expected second frame type=error, got %s", frames[1].Type)
+	}
+}
+
+func TestCreateStream_WaitingTerminalClosesObserver(t *testing.T) {
+	events := make(chan stream.PublishedEvent, 2)
+	events <- publishedTerminalEvent(t, "1-1", 6, 1, agentbiz.TerminalWaitingForUserChoice)
+	events <- publishedEvent(t, "1-2", stream.EventTokenDelta, 6, 2)
+	close(events)
+	svc := newObserverStreamSvc()
+	svc.prepared.RunID = 6
+	svc.events = events
+	ctrl := &testStreamController{svc: svc}
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.POST("/v1/agent-runs/stream", ctrl.CreateStream)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, newStreamRequest(t))
+
+	frames := parseSSEFrames(w.Body.String())
+	if len(frames) != 1 {
+		t.Fatalf("expected waiting terminal to close observer before later events, got %d\nbody:\n%s", len(frames), w.Body.String())
+	}
+	if frames[0].Type != stream.EventTerminal {
+		t.Fatalf("expected terminal frame, got %s", frames[0].Type)
 	}
 }
 
