@@ -74,12 +74,14 @@ func (s *lifecycleRunStore) Get(_ context.Context, id uint64) (*model.AgentRun, 
 	}
 	return r, nil
 }
-func (s *lifecycleRunStore) UpdateState(_ context.Context, id uint64, status, _ string, _ *time.Time) error {
+func (s *lifecycleRunStore) UpdateState(_ context.Context, id uint64, status, reason string, endedAt *time.Time) error {
 	r, ok := s.runs[id]
 	if !ok {
 		return errors.New("not found")
 	}
 	r.Status = status
+	r.StateReason = reason
+	r.EndedAt = endedAt
 	return nil
 }
 func (s *lifecycleRunStore) WriteTurn(_ context.Context, _ uint64, _ json.RawMessage) error {

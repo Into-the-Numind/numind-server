@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -367,6 +368,51 @@ func TestStartPreparedStreamRun_PublishesErrorWhenRunnerFailsBeforeTerminal(t *t
 	assert.Equal(t, string(TerminalModelError), terminalReason(t, events[2]))
 }
 
+func TestStartPreparedStreamRun_CancelBeforeRunnerEmitsPersistsAbortedTerminal(t *testing.T) {
+	const userID = uint(7)
+	runStore := newLifecycleRunStore()
+	run := &model.AgentRun{
+		UserID:            userID,
+		SessionID:         "cancel-before-runner",
+		AgentDefinitionID: 1,
+		Status:            "running",
+	}
+	require.NoError(t, runStore.Create(context.Background(), run))
+
+	broker := newRecordingSupervisorBroker()
+	svc := NewStudentRunService(nil, runStore, nil, nil, nil, nil).
+		WithRunEventBroker(broker)
+	runEntered := make(chan struct{})
+
+	require.True(t, svc.startSupervisedRun(run.ID, userID, func(ctx context.Context, _ chan<- stream.Event) (*RunResult, error) {
+		close(runEntered)
+		<-ctx.Done()
+		return nil, fmt.Errorf("pre-run load canceled: %w", ctx.Err())
+	}))
+
+	select {
+	case <-runEntered:
+	case <-time.After(time.Second):
+		t.Fatal("supervised run closure did not start")
+	}
+	require.NoError(t, svc.Cancel(context.Background(), userID, run.ID))
+	require.Eventually(t, func() bool {
+		return len(broker.eventTypes()) == 1 && !svc.streamExecutions.IsActive(run.ID)
+	}, time.Second, 10*time.Millisecond)
+
+	updated, err := runStore.Get(context.Background(), run.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "terminated", updated.Status)
+	assert.Equal(t, string(TerminalAbortedStreaming), updated.StateReason)
+	assert.NotNil(t, updated.EndedAt)
+
+	events := broker.eventsCopy()
+	assert.Equal(t, []stream.EventType{stream.EventTerminal}, supervisorEventTypes(events))
+	payload := terminalPayload(t, events[0])
+	assert.Equal(t, string(TerminalAbortedStreaming), payload.Reason)
+	assert.Equal(t, UserFacingTerminalMessage(TerminalAbortedStreaming), payload.UserMessage)
+}
+
 func TestStartPreparedStreamRun_TerminalizesErrorOnlyRunnerFailure(t *testing.T) {
 	const userID = uint(7)
 	runner := newSupervisedStreamRunner(nil, errors.New("runner returned after error event"))
@@ -492,9 +538,14 @@ func supervisorEventSeqs(events []stream.Event) []uint64 {
 
 func terminalReason(t *testing.T, event stream.Event) string {
 	t.Helper()
+	return terminalPayload(t, event).Reason
+}
+
+func terminalPayload(t *testing.T, event stream.Event) stream.TerminalPayload {
+	t.Helper()
 	var payload stream.TerminalPayload
 	require.NoError(t, json.Unmarshal(event.Data, &payload))
-	return payload.Reason
+	return payload
 }
 
 func startPreparedRunWithin(t *testing.T, svc *StudentRunService, prepared *PreparedStreamRun) bool {

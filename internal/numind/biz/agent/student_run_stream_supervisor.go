@@ -2,7 +2,9 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"time"
 
 	"numind-server/internal/numind/biz/agent/stream"
 	"numind-server/internal/pkg/log"
@@ -133,10 +135,24 @@ func (s *StudentRunService) startAdmittedSupervisedRun(
 		close(events)
 		<-drained
 		observation := <-observedEvents
-		if runErr != nil && !observation.terminalSeen {
+		if observation.terminalSeen {
+			return
+		}
+		if isExplicitSupervisedRunCancellation(admission.runnerCtx, runErr) {
+			s.persistAndPublishDetachedRunCancellation(admission.bgCtx, admission.runID, observation)
+			return
+		}
+		if runErr != nil {
 			s.publishDetachedRunFailure(admission.bgCtx, admission.runID, observation, runErr)
 		}
 	}()
+}
+
+func isExplicitSupervisedRunCancellation(ctx context.Context, runErr error) bool {
+	if errors.Is(runErr, context.Canceled) {
+		return true
+	}
+	return ctx != nil && ctx.Err() != nil
 }
 
 func runSupervisedStream(
@@ -207,5 +223,37 @@ func (s *StudentRunService) publishDetachedRunFailure(
 	}
 	if _, err := s.PublishRunEvent(ctx, runID, terminalEvent); err != nil {
 		log.Warnw("agent supervised fallback terminal publish failed", "run_id", runID, "error", err)
+	}
+}
+
+func (s *StudentRunService) persistAndPublishDetachedRunCancellation(
+	ctx context.Context,
+	runID uint64,
+	observation supervisedRunEventObservation,
+) {
+	if observation.terminalSeen {
+		return
+	}
+
+	endedAt := time.Now()
+	persistCtx := context.Background()
+	if ctx != nil {
+		persistCtx = context.WithoutCancel(ctx)
+	}
+	if s != nil && s.runStore != nil {
+		if err := s.runStore.UpdateState(persistCtx, runID, "terminated", string(TerminalAbortedStreaming), &endedAt); err != nil {
+			log.Warnw("agent supervised cancellation persist failed", "run_id", runID, "error", err)
+		}
+	}
+
+	terminalEvent, encodeErr := stream.Encode(stream.EventTerminal, stream.TerminalPayload{
+		Reason:      string(TerminalAbortedStreaming),
+		UserMessage: UserFacingTerminalMessage(TerminalAbortedStreaming),
+	}, observation.lastSeq+1, runID, 0)
+	if encodeErr != nil {
+		return
+	}
+	if _, err := s.PublishRunEvent(ctx, runID, terminalEvent); err != nil {
+		log.Warnw("agent supervised cancellation terminal publish failed", "run_id", runID, "error", err)
 	}
 }
