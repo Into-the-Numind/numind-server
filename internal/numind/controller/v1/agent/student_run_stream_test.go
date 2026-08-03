@@ -25,6 +25,7 @@ import (
 	"numind-server/internal/numind/biz/agent/stream"
 	"numind-server/internal/pkg/core"
 	"numind-server/internal/pkg/errno"
+	"numind-server/internal/pkg/langfuse"
 	"numind-server/internal/pkg/model"
 )
 
@@ -292,6 +293,65 @@ func parseSSEDataLines(body string) []string {
 	return lines
 }
 
+func setupObserverLangfuse(t *testing.T) *[]*langfuse.IngestionEvent {
+	t.Helper()
+	prev := langfuse.C
+	langfuse.C = langfuse.NewTestClient()
+	var events []*langfuse.IngestionEvent
+	langfuse.C.InstallEventHook(func(e *langfuse.IngestionEvent) {
+		events = append(events, e)
+	})
+	t.Cleanup(func() {
+		langfuse.C = prev
+	})
+	return &events
+}
+
+func newObservedGinContext(t *testing.T, ctx context.Context) *gin.Context {
+	t.Helper()
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet, "/v1/agent-runs/10/events", nil).WithContext(ctx)
+	return c
+}
+
+func spanUpdateOutput(t *testing.T, events []*langfuse.IngestionEvent) map[string]any {
+	t.Helper()
+	for _, event := range events {
+		if event.Type != "span-update" {
+			continue
+		}
+		body, ok := event.Body.(*langfuse.SpanBody)
+		if !ok {
+			t.Fatalf("expected span-update body to be *langfuse.SpanBody, got %T", event.Body)
+		}
+		output, ok := body.Output.(map[string]any)
+		if !ok {
+			t.Fatalf("expected span-update output to be map[string]any, got %T", body.Output)
+		}
+		return output
+	}
+	t.Fatalf("missing span-update event; got %v", langfuseEventTypes(events))
+	return nil
+}
+
+func langfuseEventTypes(events []*langfuse.IngestionEvent) []string {
+	types := make([]string, len(events))
+	for i, event := range events {
+		types[i] = event.Type
+	}
+	return types
+}
+
+func assertNoLangfuseGenerations(t *testing.T, events []*langfuse.IngestionEvent) {
+	t.Helper()
+	for _, event := range events {
+		if strings.Contains(event.Type, "generation") {
+			t.Fatalf("observer SSE must not create Langfuse generation events; got %v", langfuseEventTypes(events))
+		}
+	}
+}
+
 func TestCreateStream_HappyPath(t *testing.T) {
 	events := make(chan stream.PublishedEvent, 5)
 	events <- publishedEvent(t, "1000-1", stream.EventTokenDelta, 10, 1)
@@ -326,6 +386,55 @@ func TestCreateStream_HappyPath(t *testing.T) {
 	}
 	if frames[0].Type != stream.EventTokenDelta || frames[len(frames)-1].Type != stream.EventTerminal {
 		t.Fatalf("unexpected frame sequence: first=%s last=%s", frames[0].Type, frames[len(frames)-1].Type)
+	}
+}
+
+func TestObserveRunEvents_RecordsObserverDisconnectNotAbort(t *testing.T) {
+	captured := setupObserverLangfuse(t)
+	traceID := "trace-observer-disconnect"
+	ctx, cancel := context.WithCancel(langfuse.WithTrace(context.Background(), traceID))
+	cancel()
+	c := newObservedGinContext(t, ctx)
+
+	events := make(chan stream.PublishedEvent)
+	writePublishedRunEvents(c, 10, events)
+
+	assertNoLangfuseGenerations(t, *captured)
+	output := spanUpdateOutput(t, *captured)
+	if got := output["disconnect_reason"]; got != "observer_disconnect" {
+		t.Fatalf("expected disconnect_reason observer_disconnect, got %v", got)
+	}
+	oldDisconnectReason := strings.Join([]string{"client", "disconnect"}, "_")
+	oldAbortReason := strings.Join([]string{"aborted", "streaming"}, "_")
+	serialized := strings.Join([]string{
+		langfuseEventTypes(*captured)[0],
+		output["disconnect_reason"].(string),
+	}, " ")
+	if strings.Contains(serialized, oldDisconnectReason) || strings.Contains(serialized, oldAbortReason) {
+		t.Fatalf("observer disconnect must not be recorded as execution abort; events=%v output=%v", langfuseEventTypes(*captured), output)
+	}
+}
+
+func TestObserveRunEvents_DoesNotCreateNewGeneration(t *testing.T) {
+	captured := setupObserverLangfuse(t)
+	traceID := "trace-observer-complete"
+	c := newObservedGinContext(t, langfuse.WithTrace(context.Background(), traceID))
+	events := make(chan stream.PublishedEvent, 1)
+	events <- publishedTerminalEvent(t, "1000-1", 10, 1, agentbiz.TerminalCompleted)
+	close(events)
+
+	writePublishedRunEvents(c, 10, events)
+
+	if got := langfuseEventTypes(*captured); strings.Join(got, ",") != "span-create,span-update" {
+		t.Fatalf("expected only observer span events, got %v", got)
+	}
+	assertNoLangfuseGenerations(t, *captured)
+	output := spanUpdateOutput(t, *captured)
+	if got := output["disconnect_reason"]; got != "run_complete" {
+		t.Fatalf("expected disconnect_reason run_complete, got %v", got)
+	}
+	if got := output["event_count"]; got != 1 {
+		t.Fatalf("expected event_count=1, got %v", got)
 	}
 }
 

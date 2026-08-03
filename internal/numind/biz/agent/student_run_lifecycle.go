@@ -36,7 +36,7 @@ type StudentRunService struct {
 	narrationProv    *narration.Provider
 	narrationBuf     *NarrationBuffer
 	attachmentStore  store.IAgentAttachmentStore // managed file_read references + canonical parse cache
-	streamLock       *stream.SubscriptionLock    // T07: SSE single-subscriber guard
+	streamLock       *stream.SubscriptionLock    // legacy SSE single-subscriber compatibility guard
 	streamExecutions *stream.StreamExecutionRegistry
 	runEventBroker   stream.RunEventBroker // bounded cross-instance replay for detached continuations
 	userStore        userByIDGetter        // b2b2c-student-agent-access: wired via WithUserStore; nil → parent-only access
@@ -668,13 +668,13 @@ func (s *StudentRunService) ensureAttachmentsReady(ctx context.Context, userID u
 }
 
 // ---------------------------------------------------------------------------
-// T07 — SSE streaming: AcquireStreamLock / ReleaseStreamLock / RunStream
+// SSE streaming compatibility helpers: AcquireStreamLock / ReleaseStreamLock / RunStream
 // ---------------------------------------------------------------------------
 
-// AcquireStreamLock creates the agent_run row (reusing the same pre-create
-// logic as Create) and then tries to acquire a single-subscriber SSE lock on
-// it.  Only one SSE connection per run is allowed; a second caller gets
-// acquired=false with the existing runID so it can surface a 409 with the ID.
+// AcquireStreamLock creates the agent_run row (reusing PrepareStreamRun) and
+// then tries to acquire the legacy single-subscriber SSE lock on it. New
+// browser streaming uses StartPreparedStreamRun + replayable run events; this
+// wrapper remains for compatibility with older callers.
 //
 // If acquired=false the agent_run row is NOT rolled back — it has been written
 // to DB and the caller must NOT try to clean it up (the row may already have
@@ -710,13 +710,13 @@ func (s *StudentRunService) AcquireResumeStreamLock(runID uint64) bool {
 	return s.streamLock.Acquire(runID)
 }
 
-// RunStream executes the agent in streaming mode, emitting stream.Event values
-// onto ch. The caller must have already called AcquireStreamLock (which
-// pre-creates the agent_run row and acquires the SSE lock).
+// RunStream executes the agent for an already-created run, emitting
+// stream.Event values onto ch. It does not own the browser SSE observer
+// lifetime; the supervised runner path publishes these events for replayable
+// observers.
 //
-// RunStream does NOT close ch; the controller goroutine that spawns RunStream
-// closes ch after RunStream returns so that the SSE pump can drain all
-// remaining events.
+// RunStream does NOT close ch; the caller closes ch after RunStream returns so
+// downstream event publishers can drain all remaining events.
 //
 // The req.SessionID / req.AgentDefinitionID fields are used to build the
 // runner's RunRequest; the session ID is re-derived from the existing row to
@@ -1020,7 +1020,12 @@ func (s *StudentRunService) Cancel(ctx context.Context, userID uint, runID uint6
 		return errno.ErrAgentRunNotCancellable
 	}
 
-	s.runner.Cancel(runID)
+	if s.streamExecutions != nil {
+		s.streamExecutions.Cancel(runID)
+	}
+	if s.runner != nil {
+		s.runner.Cancel(runID)
+	}
 	return nil
 }
 

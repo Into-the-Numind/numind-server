@@ -30,6 +30,7 @@ type lifecycleRunner struct {
 	cancelCalled map[uint64]bool
 	runResult    *RunResult
 	runErr       error
+	onCancel     func(uint64)
 }
 
 func (m *lifecycleRunner) Run(_ context.Context, _ RunRequest) (*RunResult, error) {
@@ -43,6 +44,9 @@ func (m *lifecycleRunner) Cancel(runID uint64) bool {
 		m.cancelCalled = make(map[uint64]bool)
 	}
 	m.cancelCalled[runID] = true
+	if m.onCancel != nil {
+		m.onCancel(runID)
+	}
 	return true
 }
 
@@ -357,6 +361,34 @@ func TestStudentRunService_Cancel_HappyPath(t *testing.T) {
 	if !runner.cancelCalled[run.ID] {
 		t.Error("Cancel was not forwarded to runner")
 	}
+}
+
+func TestCancel_CancelsSupervisorBeforeRunnerRegistered(t *testing.T) {
+	var order []string
+	runner := &lifecycleRunner{
+		onCancel: func(uint64) {
+			order = append(order, "runner")
+		},
+	}
+	runStore := newLifecycleRunStore()
+
+	userID := uint(5)
+	run := &model.AgentRun{UserID: userID, Status: "running"}
+	require.NoError(t, runStore.Create(context.Background(), run))
+
+	svc := NewStudentRunService(runner, runStore, nil, nil, nil, nil)
+	done := make(chan struct{})
+	require.True(t, svc.streamExecutions.Start(run.ID, func() {
+		order = append(order, "supervisor")
+	}, done))
+	defer func() {
+		svc.streamExecutions.Finish(run.ID)
+		close(done)
+	}()
+
+	require.NoError(t, svc.Cancel(context.Background(), userID, run.ID))
+	require.Equal(t, []string{"supervisor", "runner"}, order)
+	require.True(t, runner.cancelCalled[run.ID])
 }
 
 func TestStudentRunService_Cancel_WrongOwner(t *testing.T) {
