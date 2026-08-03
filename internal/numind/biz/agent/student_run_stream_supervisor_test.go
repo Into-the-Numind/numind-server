@@ -242,6 +242,33 @@ func TestStartPreparedAnswerStream_StartsSupervisedResumeAfterPersistingAnswer(t
 	}
 }
 
+func TestStartPreparedAnswerStream_ActiveExecutionSkipsPersistenceAndRunner(t *testing.T) {
+	const userID = uint(42)
+	rs := newAnswerRunStore()
+	runID := seedAnswerRun(rs, userID, string(TerminalWaitingForUserChoice))
+	runner := newSupervisedStreamRunner(nil, nil)
+	svc := NewStudentRunService(runner, rs, nil, nil, nil, nil)
+
+	activeCtx, cancelActive := context.WithCancel(context.Background())
+	activeDone := make(chan struct{})
+	require.True(t, svc.streamExecutions.Start(runID, cancelActive, activeDone))
+	t.Cleanup(func() {
+		cancelActive()
+		close(activeDone)
+		svc.streamExecutions.Finish(runID)
+	})
+
+	ok, err := svc.StartPreparedAnswerStream(context.Background(), userID, runID, AnswerRequest{
+		Answers: map[string]AnswerItem{"Which region?": {Selected: []string{"北"}}},
+	})
+
+	require.NoError(t, err)
+	assert.False(t, ok)
+	assert.Empty(t, rs.answerAndClearCalls, "active duplicate answer stream must not persist the answer")
+	assertStreamAnswerRunnerNotStarted(t, runner.started)
+	assert.NoError(t, activeCtx.Err(), "preflight must not cancel the existing active execution")
+}
+
 func TestStartPreparedStreamRun_PublishFailureDoesNotStopRunner(t *testing.T) {
 	const userID = uint(7)
 	runner := newSupervisedStreamRunner(nil, nil)
