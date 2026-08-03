@@ -1,5 +1,24 @@
 schema_version: '2.0'
 features:
+- id: rebind-vision-task-profiles
+  ndf_version: '3.0'
+  description: Rebind AI task profiles left on the retired qwen3-vl-flash service to the active qwen3.5-flash route.
+  classification_reason: 'Hotfix: data-only system configuration repair, no DB schema, no new API endpoint, no new external integration, three repository files, and no payment or permission logic.'
+  last_updated_by: ai-h1-implementing
+  last_updated_at: '2026-08-03T10:35:00+0800'
+  created_at: '2026-08-03T10:27:58+0800'
+  track: hotfix
+  stage: H1
+  status: active
+  repos: [numind-server]
+  branches: {numind-server: fix/rebind-vision-task-profiles}
+  worktrees: {numind-server: /private/tmp/wt-rebind-vision-task-profiles-numind-server}
+  progress: {total_tasks: 2, completed_tasks: 1, reviewed_tasks: 0, current_task: 'Validate the data-only rebind migration and complete H1 gates'}
+  decisions:
+  - 'Prod logs confirmed HTTP 200 contains an SSE error: salesrag.profile resolves to retired qwen3-vl-flash and fails with AIService.ServiceNotFound.'
+  - 'Repair every task_profile.default_service_id pointing to the retired service by stable model_key; do not hard-code environment-specific service IDs or task IDs.'
+  - 'Prod remains read-only until a separate explicit migration authorization after Dev verification.'
+  blockers: []
 - id: agent-thinking-overflow
   ndf_version: '3.0'
   description: Keep long Agent deep-thinking/reasoning blocks visibly following newly streamed content instead of clipping below the panel.
