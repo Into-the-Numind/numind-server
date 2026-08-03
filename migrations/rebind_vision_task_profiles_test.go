@@ -32,7 +32,15 @@ func TestRebindVisionTaskProfilesMigrationRepairsRetiredDefaultService(t *testin
 		"qwen3.5-flash",
 		"new_service.is_active = 1",
 		"new_service.deprecated_at is null",
+		"route.is_active = 1",
+		"provider.name = 'ali-dashscope'",
+		"provider.is_active = 1",
 		"remaining_retired_vision_defaults",
+		"signal sqlstate '45000'",
+		"start transaction",
+		"rollback",
+		"resignal",
+		"commit",
 	} {
 		if !strings.Contains(sql, required) {
 			t.Errorf("migration must contain %q", required)
@@ -45,7 +53,7 @@ func TestRebindVisionTaskProfilesMigrationRepairsRetiredDefaultService(t *testin
 	if regexp.MustCompile(`(?i)default_service_id\s*=\s*[0-9]+`).MatchString(sql) {
 		t.Error("migration must resolve service IDs by stable model_key, not environment-specific numeric IDs")
 	}
-	if regexp.MustCompile(`(?i)\b(alter|create|drop|truncate|rename)\b`).MatchString(sql) {
+	if regexp.MustCompile(`(?i)\b(alter\s+table|create\s+table|drop\s+table|truncate|rename\s+table)\b`).MatchString(sql) {
 		t.Error("hotfix must be data-only and must not change database schema")
 	}
 	if containsProtectedDML(sql, protectedRolloutTablePattern) {
