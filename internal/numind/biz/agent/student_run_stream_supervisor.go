@@ -13,7 +13,8 @@ const supervisedRunEventChanCap = 256
 const supervisedRunFallbackErrorMessage = "Agent 运行中断，请稍后重试。"
 
 type supervisedRunEventObservation struct {
-	endEventSeen bool
+	errorSeen    bool
+	terminalSeen bool
 	lastSeq      uint64
 }
 
@@ -62,8 +63,8 @@ func (s *StudentRunService) startSupervisedRun(
 		close(events)
 		<-drained
 		observation := <-observedEvents
-		if runErr != nil && !observation.endEventSeen {
-			s.publishDetachedRunFailure(bgCtx, runID, observation.lastSeq, runErr)
+		if runErr != nil {
+			s.publishDetachedRunFailure(bgCtx, runID, observation, runErr)
 		}
 	}()
 
@@ -91,8 +92,11 @@ func (s *StudentRunService) publishDetachedRunEvents(
 	var observation supervisedRunEventObservation
 	for ev := range events {
 		observation.lastSeq = ev.Seq
-		if ev.Type == stream.EventTerminal || ev.Type == stream.EventError {
-			observation.endEventSeen = true
+		switch ev.Type {
+		case stream.EventError:
+			observation.errorSeen = true
+		case stream.EventTerminal:
+			observation.terminalSeen = true
 		}
 		if _, err := s.PublishRunEvent(ctx, runID, ev); err != nil {
 			log.Warnw("agent supervised event publish failed", "run_id", runID, "event_type", ev.Type, "error", err)
@@ -101,21 +105,34 @@ func (s *StudentRunService) publishDetachedRunEvents(
 	return observation
 }
 
-func (s *StudentRunService) publishDetachedRunFailure(ctx context.Context, runID uint64, lastSeq uint64, _ error) {
-	errorEvent, encodeErr := stream.Encode(stream.EventError, stream.ErrorPayload{
-		Code:    "internal",
-		Message: supervisedRunFallbackErrorMessage,
-	}, lastSeq+1, runID, 0)
-	if encodeErr == nil {
-		if _, err := s.PublishRunEvent(ctx, runID, errorEvent); err != nil {
-			log.Warnw("agent supervised fallback error publish failed", "run_id", runID, "error", err)
+func (s *StudentRunService) publishDetachedRunFailure(
+	ctx context.Context,
+	runID uint64,
+	observation supervisedRunEventObservation,
+	_ error,
+) {
+	nextSeq := observation.lastSeq
+	if !observation.errorSeen {
+		nextSeq++
+		errorEvent, encodeErr := stream.Encode(stream.EventError, stream.ErrorPayload{
+			Code:    "internal",
+			Message: supervisedRunFallbackErrorMessage,
+		}, nextSeq, runID, 0)
+		if encodeErr == nil {
+			if _, err := s.PublishRunEvent(ctx, runID, errorEvent); err != nil {
+				log.Warnw("agent supervised fallback error publish failed", "run_id", runID, "error", err)
+			}
 		}
 	}
 
+	if observation.terminalSeen {
+		return
+	}
+	nextSeq++
 	terminalEvent, encodeErr := stream.Encode(stream.EventTerminal, stream.TerminalPayload{
 		Reason:      string(TerminalModelError),
 		UserMessage: UserFacingTerminalMessage(TerminalModelError),
-	}, lastSeq+2, runID, 0)
+	}, nextSeq, runID, 0)
 	if encodeErr != nil {
 		return
 	}

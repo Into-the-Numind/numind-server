@@ -223,6 +223,27 @@ func TestStartPreparedStreamRun_PublishesErrorWhenRunnerFailsBeforeTerminal(t *t
 	assert.Equal(t, string(TerminalModelError), terminalReason(t, events[2]))
 }
 
+func TestStartPreparedStreamRun_TerminalizesErrorOnlyRunnerFailure(t *testing.T) {
+	const userID = uint(7)
+	runner := newSupervisedStreamRunner(nil, errors.New("runner returned after error event"))
+	broker := newRecordingSupervisorBroker()
+	svc, prepared := newSupervisorServiceForTest(t, userID, runner, broker)
+	runner.events = []stream.Event{
+		mustSupervisorEvent(t, stream.EventError, prepared.RunID, 7),
+	}
+
+	require.True(t, startPreparedRunWithin(t, svc, prepared))
+	waitSupervisorRunnerDone(t, runner)
+	require.Eventually(t, func() bool {
+		return len(broker.eventTypes()) == 2
+	}, time.Second, 10*time.Millisecond)
+
+	events := broker.eventsCopy()
+	assert.Equal(t, []stream.EventType{stream.EventError, stream.EventTerminal}, supervisorEventTypes(events))
+	assert.Equal(t, []uint64{7, 8}, supervisorEventSeqs(events))
+	assert.Equal(t, string(TerminalModelError), terminalReason(t, events[1]))
+}
+
 func TestStartPreparedStreamRun_PanicPublishesFallbackAndReleasesRegistry(t *testing.T) {
 	const userID = uint(7)
 	panicRunner := newSupervisedStreamRunner(nil, nil)
