@@ -256,7 +256,7 @@ func TestStartPreparedStreamRun_DoesNotPublishFallbackAfterTerminal(t *testing.T
 	require.True(t, startPreparedRunWithin(t, svc, prepared))
 	waitSupervisorRunnerDone(t, runner)
 	require.Eventually(t, func() bool {
-		return len(broker.eventTypes()) == 1
+		return !svc.streamExecutions.IsActive(prepared.RunID)
 	}, time.Second, 10*time.Millisecond)
 
 	events := broker.eventsCopy()
