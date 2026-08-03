@@ -178,6 +178,14 @@ func newLifecycleSkillStore() *lifecycleSkillStore {
 	return &lifecycleSkillStore{defs: make(map[uint64]*model.AgentDefinition)}
 }
 
+func setupStudentRunServiceForTest(t *testing.T) (*StudentRunService, *lifecycleRunStore) {
+	t.Helper()
+	runStore := newLifecycleRunStore()
+	skillStore := newLifecycleSkillStore()
+	skillStore.defs[1] = &model.AgentDefinition{ID: 1, ParentUserID: 123, IsActive: true}
+	return NewStudentRunService(&lifecycleRunner{}, runStore, skillStore, nil, nil, nil), runStore
+}
+
 func (s *lifecycleSkillStore) GetByIDIncludeInactive(_ context.Context, id uint64) (*model.AgentDefinition, error) {
 	d, ok := s.defs[id]
 	if !ok {
@@ -644,6 +652,34 @@ func TestComposeAttachmentInput_UsesIDsWithoutInjectingParsedBodyAndKeepsURLFall
 	require.Len(t, display, 2)
 	assert.Equal(t, "managed.docx", display[0].Filename)
 	assert.Equal(t, "legacy.txt", display[1].Filename)
+}
+
+func TestPrepareStreamRun_PrecreatesRunningRunWithoutSubscriptionLock(t *testing.T) {
+	s, runs := setupStudentRunServiceForTest(t)
+	prepared, err := s.PrepareStreamRun(context.Background(), 123, CreateRunRequest{
+		AgentDefinitionID: 1,
+		Message:           "hello",
+	})
+	require.NoError(t, err)
+	require.NotZero(t, prepared.RunID)
+	require.Equal(t, uint(123), prepared.UserID)
+	require.Equal(t, "hello", prepared.Request.Message)
+	run, err := runs.Get(context.Background(), prepared.RunID)
+	require.NoError(t, err)
+	require.Equal(t, "running", run.Status)
+	require.NotEmpty(t, run.SessionID)
+}
+
+func TestAcquireStreamLock_RemainsCompatibilityWrapper(t *testing.T) {
+	s, _ := setupStudentRunServiceForTest(t)
+	runID, acquired, err := s.AcquireStreamLock(context.Background(), 123, CreateRunRequest{
+		AgentDefinitionID: 1,
+		Message:           "hello",
+	})
+	require.NoError(t, err)
+	require.True(t, acquired)
+	require.NotZero(t, runID)
+	s.ReleaseStreamLock(runID)
 }
 
 func TestAcquireStreamLock_PersistsInitialUserTurnWithAttachment(t *testing.T) {

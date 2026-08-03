@@ -678,75 +678,16 @@ func (s *StudentRunService) ensureAttachmentsReady(ctx context.Context, userID u
 // to DB and the caller must NOT try to clean it up (the row may already have
 // been picked up by a background runner in a concurrent CreateStream request).
 func (s *StudentRunService) AcquireStreamLock(ctx context.Context, userID uint, req CreateRunRequest) (runID uint64, acquired bool, err error) {
-	if req.hasNoSendable() {
-		return 0, false, errno.ErrBind.SetMessage("message or attachment is required")
-	}
-	if err := s.ensureAttachmentsReady(ctx, userID, req.AttachmentIDs); err != nil {
+	prepared, err := s.PrepareStreamRun(ctx, userID, req)
+	if err != nil {
 		return 0, false, err
 	}
-
-	// Validate agent definition. The returned ad is intentionally unused — its
-	// fields (ToolFlags / ParentUserID) are not stored on agent_run; ToolFlags
-	// are re-resolved from skillStore inside RunStream, and ParentUserID acts as
-	// an access guard inside resolveDefinition itself. Calling for the side
-	// effect (validation + error propagation) is sufficient.
-	if _, err := s.resolveDefinition(ctx, userID, req.AgentDefinitionID); err != nil {
-		return 0, false, err
-	}
-
-	// Generate session ID if not provided.
-	sessionID := req.SessionID
-	if sessionID == "" {
-		sessionID = uuid.New().String()
-	}
-
-	// Inherit is_pinned / session_name from prior session runs.
-	var isPinned bool
-	var sessionName string
-	if sessionID != "" {
-		runs, _, listErr := s.runStore.ListBySession(ctx, sessionID, 0, 1)
-		if listErr == nil && len(runs) > 0 {
-			isPinned = runs[0].IsPinned
-			sessionName = runs[0].SessionName
-		}
-	}
-
-	_, _, displayAtts := s.composeAttachmentInput(ctx, userID, req)
-
-	// Pre-create the agent_run row synchronously (same pattern as Create).
-	// P1 fix (T07): use ad fields to populate preRun, matching Create()'s pattern.
-	// ad.ParentUserID is the parent account for this learner — not stored on
-	// agent_run directly, but validated by resolveDefinition above (access guard).
-	// UseCompactV2 is intentionally hardcoded to true for streaming: all new runs
-	// use V2 compact (V1 compact package was removed in compact-v1-removal). A
-	// future toggle via ad.UseCompactV2 field can replace this when the schema lands.
-	startedAt := time.Now()
-	preRun := &model.AgentRun{
-		UserID:            userID,
-		SessionID:         sessionID,
-		AgentDefinitionID: req.AgentDefinitionID,
-		Status:            "running",
-		Messages:          initialDisplayMessagesJSON(req.Message, displayAtts),
-		StartedAt:         startedAt,
-		UseCompactV2:      true,       // always V2; see comment above
-		IsTest:            req.IsTest, // agent-mode-billing T10: persist 试聊审计标记
-		IsPinned:          isPinned,
-		SessionName:       sessionName,
-		// Note: ToolFlags from ad are NOT stored on agent_run — they are resolved
-		// at execution time by RunStream (re-loads the skill from skillStore).
-		// ParentUserID from ad is validated above (access guard) and not a model field.
-	}
-	if err := s.runStore.Create(ctx, preRun); err != nil {
-		return 0, false, fmt.Errorf("StudentRunService.AcquireStreamLock pre-create row: %w", err)
-	}
-
-	// Attempt to acquire the SSE lock for the new run.
-	if !s.streamLock.Acquire(preRun.ID) {
+	if !s.streamLock.Acquire(prepared.RunID) {
 		// Another subscriber already holds this run's lock (extremely unlikely for
 		// a brand-new run, but the interface contract must be upheld).
-		return preRun.ID, false, nil
+		return prepared.RunID, false, nil
 	}
-	return preRun.ID, true, nil
+	return prepared.RunID, true, nil
 }
 
 // ReleaseStreamLock releases the SSE single-subscriber lock for runID.
