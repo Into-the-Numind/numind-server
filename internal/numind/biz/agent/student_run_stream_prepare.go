@@ -72,6 +72,8 @@ func (s *StudentRunService) PrepareStreamRun(ctx context.Context, userID uint, r
 		return nil, fmt.Errorf("StudentRunService.PrepareStreamRun pre-create row: %w", err)
 	}
 
+	req.SessionID = sessionID
+
 	return &PreparedStreamRun{
 		RunID:     preRun.ID,
 		SessionID: preRun.SessionID,

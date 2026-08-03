@@ -664,10 +664,14 @@ func TestPrepareStreamRun_PrecreatesRunningRunWithoutSubscriptionLock(t *testing
 	require.NotZero(t, prepared.RunID)
 	require.Equal(t, uint(123), prepared.UserID)
 	require.Equal(t, "hello", prepared.Request.Message)
+	require.NotEmpty(t, prepared.SessionID)
+	require.Equal(t, prepared.SessionID, prepared.Request.SessionID)
+	require.True(t, s.streamLock.Acquire(prepared.RunID))
+	s.ReleaseStreamLock(prepared.RunID)
 	run, err := runs.Get(context.Background(), prepared.RunID)
 	require.NoError(t, err)
 	require.Equal(t, "running", run.Status)
-	require.NotEmpty(t, run.SessionID)
+	require.Equal(t, prepared.SessionID, run.SessionID)
 }
 
 func TestAcquireStreamLock_RemainsCompatibilityWrapper(t *testing.T) {
