@@ -4,8 +4,8 @@ features:
   ndf_version: '3.0'
   description: Let user-facing Agent runs continue server-side after the browser refreshes, closes, or leaves the chat page, while preserving explicit cancel semantics and durable final results on return.
   classification_reason: 'Standard: changes Agent streaming lifecycle semantics across backend and possibly frontend, touches core biz/controller behavior, explicit cancel and billing finalization semantics, and more than three files.'
-  last_updated_by: ai-s4-t3-complete
-  last_updated_at: '2026-08-03T20:53:57+0800'
+  last_updated_by: ai-s4-t4-complete
+  last_updated_at: '2026-08-03T21:22:01+0800'
   created_at: '2026-08-03T17:10:06+0800'
   track: standard
   stage: S4
@@ -13,7 +13,7 @@ features:
   repos: [numind-server, numind-web-v3]
   branches: {numind-server: feature/agent-run-survives-exit, numind-web-v3: feature/agent-run-survives-exit}
   worktrees: {numind-server: /private/tmp/wt-agent-run-survives-exit-numind-server, numind-web-v3: /private/tmp/wt-agent-run-survives-exit-numind-web-v3}
-  progress: {total_tasks: 10, completed_tasks: 3, reviewed_tasks: 3, current_task: 'S4 Task 3 supervised publisher and initial stream start complete (35655727 + failure hardening 75075718/53f2bbe0/0db3ab24 + test hardening 3b96fe85; spec review PASS; code-quality review PASS). Task 4 supervised answer resume in progress.'}
+  progress: {total_tasks: 10, completed_tasks: 4, reviewed_tasks: 4, current_task: 'S4 Task 4 supervised answer resume complete (880c299b + admission hardening 13cd1742/4f7dd10c; spec review PASS; code-quality re-review PASS). Next: Task 5 observer-only SSE controllers and API contract.'}
   artifacts:
     requirement: requirements/agent-run-survives-exit.md
     proposal: proposals/agent-run-survives-exit-proposal.md
