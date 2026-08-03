@@ -29,16 +29,17 @@ import (
 // StudentRunService handles learner-facing agent run lifecycle operations.
 // Spec: #14 follow-up BETA — 6 run lifecycle endpoints.
 type StudentRunService struct {
-	runner          AgentRunner
-	runStore        store.IAgentRunStore
-	skillStore      store.IAgentDefinitionStore
-	pricingCalc     pricing.ICalculator
-	narrationProv   *narration.Provider
-	narrationBuf    *NarrationBuffer
-	attachmentStore store.IAgentAttachmentStore // managed file_read references + canonical parse cache
-	streamLock      *stream.SubscriptionLock    // T07: SSE single-subscriber guard
-	runEventBroker  stream.RunEventBroker       // bounded cross-instance replay for detached continuations
-	userStore       userByIDGetter              // b2b2c-student-agent-access: wired via WithUserStore; nil → parent-only access
+	runner           AgentRunner
+	runStore         store.IAgentRunStore
+	skillStore       store.IAgentDefinitionStore
+	pricingCalc      pricing.ICalculator
+	narrationProv    *narration.Provider
+	narrationBuf     *NarrationBuffer
+	attachmentStore  store.IAgentAttachmentStore // managed file_read references + canonical parse cache
+	streamLock       *stream.SubscriptionLock    // T07: SSE single-subscriber guard
+	streamExecutions *stream.StreamExecutionRegistry
+	runEventBroker   stream.RunEventBroker // bounded cross-instance replay for detached continuations
+	userStore        userByIDGetter        // b2b2c-student-agent-access: wired via WithUserStore; nil → parent-only access
 }
 
 // NewStudentRunService constructs a StudentRunService.
@@ -57,13 +58,14 @@ func NewStudentRunService(
 	narrationBuf *NarrationBuffer,
 ) *StudentRunService {
 	return &StudentRunService{
-		runner:        runner,
-		runStore:      runStore,
-		skillStore:    skillStore,
-		pricingCalc:   pricingCalc,
-		narrationProv: narrationProv,
-		narrationBuf:  narrationBuf,
-		streamLock:    stream.NewSubscriptionLock(),
+		runner:           runner,
+		runStore:         runStore,
+		skillStore:       skillStore,
+		pricingCalc:      pricingCalc,
+		narrationProv:    narrationProv,
+		narrationBuf:     narrationBuf,
+		streamLock:       stream.NewSubscriptionLock(),
+		streamExecutions: stream.NewStreamExecutionRegistry(),
 	}
 }
 
