@@ -1,5 +1,25 @@
 schema_version: '2.0'
 features:
+- id: agent-run-survives-exit
+  ndf_version: '3.0'
+  description: Let user-facing Agent runs continue server-side after the browser refreshes, closes, or leaves the chat page, while preserving explicit cancel semantics and durable final results on return.
+  classification_reason: 'Standard: changes Agent streaming lifecycle semantics across backend and possibly frontend, touches core biz/controller behavior, explicit cancel and billing finalization semantics, and more than three files.'
+  last_updated_by: ai-s0-requirement
+  last_updated_at: '2026-08-03T17:16:00+0800'
+  created_at: '2026-08-03T17:10:06+0800'
+  track: standard
+  stage: S0
+  status: active
+  repos: [numind-server, numind-web-v3]
+  branches: {numind-server: feature/agent-run-survives-exit, numind-web-v3: feature/agent-run-survives-exit}
+  worktrees: {numind-server: /private/tmp/wt-agent-run-survives-exit-numind-server, numind-web-v3: /private/tmp/wt-agent-run-survives-exit-numind-web-v3}
+  progress: {total_tasks: 0, completed_tasks: 0, reviewed_tasks: 0, current_task: 'S0 requirement recorded; waiting for continue-evaluation gate'}
+  artifacts:
+    requirement: requirements/agent-run-survives-exit.md
+  decisions:
+  - 'Initial investigation found the non-stream Create path already detaches execution from HTTP cancellation, while the stream path cancels runCtx on client disconnect.'
+  - 'Desired product semantic: browser/SSE disconnect is observation loss only; POST cancel remains the only user-facing cancellation path.'
+  blockers: []
 - id: rebind-vision-task-profiles
   ndf_version: '3.0'
   description: Rebind AI task profiles left on the retired qwen3-vl-flash service to the active qwen3.5-flash route.
