@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"numind-server/internal/numind/biz/agent/stream"
+	"numind-server/internal/pkg/middleware"
 	"numind-server/internal/pkg/model"
 )
 
@@ -20,6 +21,11 @@ type supervisedStreamRunner struct {
 	runErr            error
 	blockBeforeEvents <-chan struct{}
 	panicBeforeEvents bool
+
+	capturedReq      RunRequest
+	capturedRunID    uint64
+	ctxErrAfterBlock error
+	ctxUserID        uint
 
 	started chan struct{}
 	done    chan struct{}
@@ -40,6 +46,11 @@ func (r *supervisedStreamRunner) Run(context.Context, RunRequest) (*RunResult, e
 }
 
 func (r *supervisedStreamRunner) RunStream(ctx context.Context, req RunRequest, runID uint64, ch chan<- stream.Event) (*RunResult, error) {
+	r.capturedReq = req
+	r.capturedRunID = runID
+	if uid, ok := middleware.UserIDFromCtx(ctx); ok {
+		r.ctxUserID = uid
+	}
 	r.once.Do(func() { close(r.started) })
 	defer close(r.done)
 
@@ -50,6 +61,7 @@ func (r *supervisedStreamRunner) RunStream(ctx context.Context, req RunRequest, 
 			return nil, ctx.Err()
 		}
 	}
+	r.ctxErrAfterBlock = ctx.Err()
 	if r.panicBeforeEvents {
 		panic("supervised runner panic")
 	}
@@ -181,6 +193,53 @@ func TestStartPreparedStreamRun_PublishUsesDetachedContext(t *testing.T) {
 	}, time.Second, 10*time.Millisecond)
 
 	assert.NoError(t, broker.contextErrs()[0], "publish context must be detached from the canceled request context")
+}
+
+func TestStartPreparedAnswerStream_StartsSupervisedResumeAfterPersistingAnswer(t *testing.T) {
+	const userID = uint(42)
+	rs := newAnswerRunStore()
+	runID := seedAnswerRun(rs, userID, string(TerminalWaitingForUserChoice))
+	releaseRunner := make(chan struct{})
+	runner := newSupervisedStreamRunner([]stream.Event{
+		mustSupervisorEvent(t, stream.EventTokenDelta, runID, 1),
+		mustSupervisorEvent(t, stream.EventTerminal, runID, 2),
+	}, nil)
+	runner.blockBeforeEvents = releaseRunner
+	broker := newRecordingSupervisorBroker()
+	svc := NewStudentRunService(runner, rs, nil, nil, nil, nil).
+		WithRunEventBroker(broker)
+
+	requestCtx, cancelRequest := context.WithCancel(context.Background())
+	ok, err := svc.StartPreparedAnswerStream(requestCtx, userID, runID, AnswerRequest{
+		Answers: map[string]AnswerItem{"Which region?": {Selected: []string{"北"}}},
+	})
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.Contains(t, rs.answerAndClearCalls, runID, "answer must be persisted before returning success")
+	require.True(t, svc.streamExecutions.IsActive(runID), "valid resume must enter the supervisor registry")
+
+	select {
+	case <-runner.started:
+	case <-time.After(time.Second):
+		t.Fatal("supervised answer resume runner did not start")
+	}
+
+	cancelRequest()
+	close(releaseRunner)
+	waitSupervisorRunnerDone(t, runner)
+	require.Eventually(t, func() bool {
+		return len(broker.eventTypes()) == 2 && !svc.streamExecutions.IsActive(runID)
+	}, time.Second, 10*time.Millisecond)
+
+	assert.Equal(t, runID, runner.capturedRunID)
+	assert.Equal(t, runID, runner.capturedReq.ExistingRunID)
+	assert.Contains(t, runner.capturedReq.Input, "用户已回答")
+	assert.Equal(t, userID, runner.ctxUserID)
+	assert.NoError(t, runner.ctxErrAfterBlock, "runner context must be detached from the canceled request context")
+	assert.Equal(t, []stream.EventType{stream.EventTokenDelta, stream.EventTerminal}, broker.eventTypes())
+	for _, ctxErr := range broker.contextErrs() {
+		assert.NoError(t, ctxErr, "publisher context must survive caller cancellation")
+	}
 }
 
 func TestStartPreparedStreamRun_PublishFailureDoesNotStopRunner(t *testing.T) {

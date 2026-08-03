@@ -29,6 +29,19 @@ func (s *StudentRunService) StartPreparedStreamRun(prepared *PreparedStreamRun) 
 	})
 }
 
+// StartPreparedAnswerStream validates and persists a user answer synchronously,
+// then resumes the streaming run on a detached supervised runner.
+func (s *StudentRunService) StartPreparedAnswerStream(ctx context.Context, userID uint, runID uint64, req AnswerRequest) (bool, error) {
+	runReq, err := s.validateAndPersistAnswer(ctx, userID, runID, req)
+	if err != nil {
+		return false, err
+	}
+	return s.startSupervisedRun(runID, userID, func(runCtx context.Context, ch chan<- stream.Event) (*RunResult, error) {
+		go s.forwardNarration(runID)
+		return s.runner.RunStream(runCtx, runReq, runID, ch)
+	}), nil
+}
+
 func (s *StudentRunService) startSupervisedRun(
 	runID uint64,
 	userID uint,
