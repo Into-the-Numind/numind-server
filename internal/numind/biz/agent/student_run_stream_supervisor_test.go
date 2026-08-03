@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sync"
 	"testing"
@@ -18,6 +19,7 @@ type supervisedStreamRunner struct {
 	events            []stream.Event
 	runErr            error
 	blockBeforeEvents <-chan struct{}
+	panicBeforeEvents bool
 
 	started chan struct{}
 	done    chan struct{}
@@ -47,6 +49,9 @@ func (r *supervisedStreamRunner) RunStream(ctx context.Context, req RunRequest, 
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		}
+	}
+	if r.panicBeforeEvents {
+		panic("supervised runner panic")
 	}
 
 	for _, event := range r.events {
@@ -108,6 +113,14 @@ func (b *recordingSupervisorBroker) contextErrs() []error {
 	return errs
 }
 
+func (b *recordingSupervisorBroker) eventsCopy() []stream.Event {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	events := make([]stream.Event, len(b.events))
+	copy(events, b.events)
+	return events
+}
+
 func TestStartPreparedStreamRun_DrainsEventsWithoutSubscriber(t *testing.T) {
 	const userID = uint(7)
 	releaseRunner := make(chan struct{})
@@ -135,6 +148,9 @@ func TestStartPreparedStreamRun_DrainsEventsWithoutSubscriber(t *testing.T) {
 		stream.EventAssistantMessage,
 		stream.EventTerminal,
 	}, broker.eventTypes())
+	require.Eventually(t, func() bool {
+		return !svc.streamExecutions.IsActive(prepared.RunID)
+	}, time.Second, 10*time.Millisecond)
 }
 
 func TestStartPreparedStreamRun_PublishUsesDetachedContext(t *testing.T) {
@@ -198,10 +214,43 @@ func TestStartPreparedStreamRun_PublishesErrorWhenRunnerFailsBeforeTerminal(t *t
 	require.True(t, startPreparedRunWithin(t, svc, prepared))
 	waitSupervisorRunnerDone(t, runner)
 	require.Eventually(t, func() bool {
-		return len(broker.eventTypes()) == 2
+		return len(broker.eventTypes()) == 3
 	}, time.Second, 10*time.Millisecond)
 
-	assert.Equal(t, []stream.EventType{stream.EventTokenDelta, stream.EventError}, broker.eventTypes())
+	events := broker.eventsCopy()
+	assert.Equal(t, []stream.EventType{stream.EventTokenDelta, stream.EventError, stream.EventTerminal}, supervisorEventTypes(events))
+	assert.Equal(t, []uint64{1, 2, 3}, supervisorEventSeqs(events))
+	assert.Equal(t, string(TerminalModelError), terminalReason(t, events[2]))
+}
+
+func TestStartPreparedStreamRun_PanicPublishesFallbackAndReleasesRegistry(t *testing.T) {
+	const userID = uint(7)
+	panicRunner := newSupervisedStreamRunner(nil, nil)
+	panicRunner.panicBeforeEvents = true
+	broker := newRecordingSupervisorBroker()
+	svc, prepared := newSupervisorServiceForTest(t, userID, panicRunner, broker)
+
+	require.True(t, startPreparedRunWithin(t, svc, prepared))
+	waitSupervisorRunnerDone(t, panicRunner)
+	require.Eventually(t, func() bool {
+		return len(broker.eventTypes()) == 2 && !svc.streamExecutions.IsActive(prepared.RunID)
+	}, time.Second, 10*time.Millisecond)
+
+	events := broker.eventsCopy()
+	assert.Equal(t, []stream.EventType{stream.EventError, stream.EventTerminal}, supervisorEventTypes(events))
+	assert.Equal(t, []uint64{1, 2}, supervisorEventSeqs(events))
+	assert.Equal(t, string(TerminalModelError), terminalReason(t, events[1]))
+
+	restartRunner := newSupervisedStreamRunner([]stream.Event{
+		mustSupervisorEvent(t, stream.EventTerminal, prepared.RunID, 3),
+	}, nil)
+	svc.runner = restartRunner
+	require.True(t, startPreparedRunWithin(t, svc, prepared), "finished runs must be removed from the registry")
+	waitSupervisorRunnerDone(t, restartRunner)
+	require.Eventually(t, func() bool {
+		return len(broker.eventTypes()) == 3 && !svc.streamExecutions.IsActive(prepared.RunID)
+	}, time.Second, 10*time.Millisecond)
+	assert.Equal(t, stream.EventTerminal, broker.eventsCopy()[2].Type)
 }
 
 func newSupervisorServiceForTest(
@@ -238,6 +287,29 @@ func mustSupervisorEvent(t *testing.T, eventType stream.EventType, runID uint64,
 	event, err := stream.Encode(eventType, map[string]any{"seq": seq}, seq, runID, 0)
 	require.NoError(t, err)
 	return event
+}
+
+func supervisorEventTypes(events []stream.Event) []stream.EventType {
+	types := make([]stream.EventType, 0, len(events))
+	for _, event := range events {
+		types = append(types, event.Type)
+	}
+	return types
+}
+
+func supervisorEventSeqs(events []stream.Event) []uint64 {
+	seqs := make([]uint64, 0, len(events))
+	for _, event := range events {
+		seqs = append(seqs, event.Seq)
+	}
+	return seqs
+}
+
+func terminalReason(t *testing.T, event stream.Event) string {
+	t.Helper()
+	var payload stream.TerminalPayload
+	require.NoError(t, json.Unmarshal(event.Data, &payload))
+	return payload.Reason
 }
 
 func startPreparedRunWithin(t *testing.T, svc *StudentRunService, prepared *PreparedStreamRun) bool {

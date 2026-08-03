@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 
 	"numind-server/internal/numind/biz/agent/stream"
 	"numind-server/internal/pkg/log"
@@ -9,6 +10,12 @@ import (
 )
 
 const supervisedRunEventChanCap = 256
+const supervisedRunFallbackErrorMessage = "Agent 运行中断，请稍后重试。"
+
+type supervisedRunEventObservation struct {
+	endEventSeen bool
+	lastSeq      uint64
+}
 
 // StartPreparedStreamRun starts a prepared stream run on a detached supervised
 // runner and publishes emitted events into the run event broker best-effort.
@@ -45,44 +52,74 @@ func (s *StudentRunService) startSupervisedRun(
 
 		events := make(chan stream.Event, supervisedRunEventChanCap)
 		drained := make(chan struct{})
-		observedTerminal := make(chan bool, 1)
+		observedEvents := make(chan supervisedRunEventObservation, 1)
 		go func() {
 			defer close(drained)
-			observedTerminal <- s.publishDetachedRunEvents(bgCtx, runID, events)
+			observedEvents <- s.publishDetachedRunEvents(bgCtx, runID, events)
 		}()
 
-		_, runErr := run(runnerCtx, events)
+		_, runErr := runSupervisedStream(runnerCtx, events, run)
 		close(events)
 		<-drained
-		terminalSeen := <-observedTerminal
-		if runErr != nil && !terminalSeen {
-			s.publishDetachedRunError(bgCtx, runID, runErr)
+		observation := <-observedEvents
+		if runErr != nil && !observation.endEventSeen {
+			s.publishDetachedRunFailure(bgCtx, runID, observation.lastSeq, runErr)
 		}
 	}()
 
 	return true
 }
 
-func (s *StudentRunService) publishDetachedRunEvents(ctx context.Context, runID uint64, events <-chan stream.Event) bool {
-	terminalSeen := false
+func runSupervisedStream(
+	ctx context.Context,
+	events chan<- stream.Event,
+	run func(context.Context, chan<- stream.Event) (*RunResult, error),
+) (result *RunResult, runErr error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			runErr = fmt.Errorf("agent supervised stream run panic: %v", recovered)
+		}
+	}()
+	return run(ctx, events)
+}
+
+func (s *StudentRunService) publishDetachedRunEvents(
+	ctx context.Context,
+	runID uint64,
+	events <-chan stream.Event,
+) supervisedRunEventObservation {
+	var observation supervisedRunEventObservation
 	for ev := range events {
+		observation.lastSeq = ev.Seq
 		if ev.Type == stream.EventTerminal || ev.Type == stream.EventError {
-			terminalSeen = true
+			observation.endEventSeen = true
 		}
 		if _, err := s.PublishRunEvent(ctx, runID, ev); err != nil {
 			log.Warnw("agent supervised event publish failed", "run_id", runID, "event_type", ev.Type, "error", err)
 		}
 	}
-	return terminalSeen
+	return observation
 }
 
-func (s *StudentRunService) publishDetachedRunError(ctx context.Context, runID uint64, _ error) {
-	ev, encodeErr := stream.Encode(stream.EventError, stream.ErrorPayload{
+func (s *StudentRunService) publishDetachedRunFailure(ctx context.Context, runID uint64, lastSeq uint64, _ error) {
+	errorEvent, encodeErr := stream.Encode(stream.EventError, stream.ErrorPayload{
 		Code:    "internal",
-		Message: "Agent 运行中断，请稍后重试。",
-	}, 0, runID, 0)
+		Message: supervisedRunFallbackErrorMessage,
+	}, lastSeq+1, runID, 0)
+	if encodeErr == nil {
+		if _, err := s.PublishRunEvent(ctx, runID, errorEvent); err != nil {
+			log.Warnw("agent supervised fallback error publish failed", "run_id", runID, "error", err)
+		}
+	}
+
+	terminalEvent, encodeErr := stream.Encode(stream.EventTerminal, stream.TerminalPayload{
+		Reason:      string(TerminalModelError),
+		UserMessage: UserFacingTerminalMessage(TerminalModelError),
+	}, lastSeq+2, runID, 0)
 	if encodeErr != nil {
 		return
 	}
-	_, _ = s.PublishRunEvent(ctx, runID, ev)
+	if _, err := s.PublishRunEvent(ctx, runID, terminalEvent); err != nil {
+		log.Warnw("agent supervised fallback terminal publish failed", "run_id", runID, "error", err)
+	}
 }
