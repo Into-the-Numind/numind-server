@@ -63,7 +63,7 @@ func (s *StudentRunService) startSupervisedRun(
 		close(events)
 		<-drained
 		observation := <-observedEvents
-		if runErr != nil {
+		if runErr != nil && !observation.terminalSeen {
 			s.publishDetachedRunFailure(bgCtx, runID, observation, runErr)
 		}
 	}()
@@ -111,6 +111,10 @@ func (s *StudentRunService) publishDetachedRunFailure(
 	observation supervisedRunEventObservation,
 	_ error,
 ) {
+	if observation.terminalSeen {
+		return
+	}
+
 	nextSeq := observation.lastSeq
 	if !observation.errorSeen {
 		nextSeq++
@@ -125,9 +129,6 @@ func (s *StudentRunService) publishDetachedRunFailure(
 		}
 	}
 
-	if observation.terminalSeen {
-		return
-	}
 	nextSeq++
 	terminalEvent, encodeErr := stream.Encode(stream.EventTerminal, stream.TerminalPayload{
 		Reason:      string(TerminalModelError),

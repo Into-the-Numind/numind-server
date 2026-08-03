@@ -244,6 +244,26 @@ func TestStartPreparedStreamRun_TerminalizesErrorOnlyRunnerFailure(t *testing.T)
 	assert.Equal(t, string(TerminalModelError), terminalReason(t, events[1]))
 }
 
+func TestStartPreparedStreamRun_DoesNotPublishFallbackAfterTerminal(t *testing.T) {
+	const userID = uint(7)
+	runner := newSupervisedStreamRunner(nil, errors.New("finalize failed after terminal"))
+	broker := newRecordingSupervisorBroker()
+	svc, prepared := newSupervisorServiceForTest(t, userID, runner, broker)
+	runner.events = []stream.Event{
+		mustSupervisorEvent(t, stream.EventTerminal, prepared.RunID, 4),
+	}
+
+	require.True(t, startPreparedRunWithin(t, svc, prepared))
+	waitSupervisorRunnerDone(t, runner)
+	require.Eventually(t, func() bool {
+		return len(broker.eventTypes()) == 1
+	}, time.Second, 10*time.Millisecond)
+
+	events := broker.eventsCopy()
+	assert.Equal(t, []stream.EventType{stream.EventTerminal}, supervisorEventTypes(events))
+	assert.Equal(t, []uint64{4}, supervisorEventSeqs(events))
+}
+
 func TestStartPreparedStreamRun_PanicPublishesFallbackAndReleasesRegistry(t *testing.T) {
 	const userID = uint(7)
 	panicRunner := newSupervisedStreamRunner(nil, nil)
