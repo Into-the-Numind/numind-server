@@ -23,6 +23,8 @@ type streamAnswerRunner struct {
 	capturedReq  RunRequest
 	emit         []stream.Event
 	runStreamErr error
+	started      chan struct{}
+	done         chan struct{}
 }
 
 func (r *streamAnswerRunner) Run(_ context.Context, _ RunRequest) (*RunResult, error) {
@@ -31,6 +33,12 @@ func (r *streamAnswerRunner) Run(_ context.Context, _ RunRequest) (*RunResult, e
 func (r *streamAnswerRunner) RunStream(_ context.Context, req RunRequest, _ uint64, ch chan<- stream.Event) (*RunResult, error) {
 	r.streamCalled = true
 	r.capturedReq = req
+	if r.started != nil {
+		close(r.started)
+	}
+	if r.done != nil {
+		defer close(r.done)
+	}
 	for _, ev := range r.emit {
 		ch <- ev
 	}
@@ -45,6 +53,10 @@ func newStreamAnswerService(rs *answerRunStore, runner *streamAnswerRunner) *Stu
 		skillStore: nil,
 		streamLock: stream.NewSubscriptionLock(),
 	}
+}
+
+func newSupervisedAnswerStreamService(rs *answerRunStore, runner AgentRunner) *StudentRunService {
+	return NewStudentRunService(runner, rs, nil, nil, nil, nil)
 }
 
 // TestAnswerStream_HappyPath_DrivesRunStream verifies AnswerStream validates +
@@ -172,6 +184,101 @@ func TestAnswerStream_PriorTranscriptInHistory(t *testing.T) {
 	assert.Contains(t, joined, "我先联网检索", "prior research must survive into streamed resume context")
 }
 
+func TestStartPreparedAnswerStream_ValidationIsSynchronous(t *testing.T) {
+	rs := newAnswerRunStore()
+	runner := &streamAnswerRunner{started: make(chan struct{})}
+	svc := newSupervisedAnswerStreamService(rs, runner)
+	userID := uint(42)
+	runID := seedAnswerRun(rs, userID, string(TerminalWaitingForUserChoice))
+
+	type result struct {
+		ok  bool
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		ok, err := svc.StartPreparedAnswerStream(context.Background(), userID, runID, AnswerRequest{
+			Answers: map[string]AnswerItem{"Unexpected question?": {Selected: []string{"北"}}},
+		})
+		done <- result{ok: ok, err: err}
+	}()
+
+	select {
+	case res := <-done:
+		require.Error(t, res.err)
+		assert.False(t, res.ok)
+		assert.Contains(t, res.err.Error(), "was not asked")
+	case <-time.After(time.Second):
+		t.Fatal("validation error was not returned synchronously")
+	}
+
+	assert.Empty(t, rs.answerAndClearCalls, "invalid answers must not be persisted")
+	assert.False(t, svc.streamExecutions.IsActive(runID), "validation failure must not enter the supervisor registry")
+	assertStreamAnswerRunnerNotStarted(t, runner.started)
+}
+
+func TestStartPreparedAnswerStream_InvalidAnswerDoesNotStartSupervisor(t *testing.T) {
+	validAnswer := AnswerRequest{Answers: map[string]AnswerItem{
+		"Which region?": {Selected: []string{"北"}},
+	}}
+
+	tests := []struct {
+		name       string
+		ownerID    uint
+		callerID   uint
+		state      string
+		req        AnswerRequest
+		wantStatus int
+	}{
+		{
+			name:       "cross-user",
+			ownerID:    10,
+			callerID:   99,
+			state:      string(TerminalWaitingForUserChoice),
+			req:        validAnswer,
+			wantStatus: 404,
+		},
+		{
+			name:       "non-waiting-run",
+			ownerID:    42,
+			callerID:   42,
+			state:      "completed",
+			req:        validAnswer,
+			wantStatus: 400,
+		},
+		{
+			name:       "empty-answers",
+			ownerID:    42,
+			callerID:   42,
+			state:      string(TerminalWaitingForUserChoice),
+			req:        AnswerRequest{Answers: map[string]AnswerItem{}},
+			wantStatus: 400,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rs := newAnswerRunStore()
+			runner := &streamAnswerRunner{started: make(chan struct{})}
+			svc := newSupervisedAnswerStreamService(rs, runner)
+			runID := seedAnswerRun(rs, tt.ownerID, tt.state)
+
+			ok, err := svc.StartPreparedAnswerStream(context.Background(), tt.callerID, runID, tt.req)
+
+			require.Error(t, err)
+			assert.False(t, ok)
+			var e *errno.Errno
+			if errors.As(err, &e) {
+				assert.Equal(t, tt.wantStatus, e.HTTP)
+			}
+			assert.Empty(t, rs.answerAndClearCalls)
+			assert.False(t, svc.streamExecutions.IsActive(runID))
+			assert.False(t, runner.streamCalled)
+			assertStreamAnswerRunnerNotStarted(t, runner.started)
+		})
+	}
+}
+
 // drainEvents reads up to n events from ch (non-blocking after the producer
 // closes / pauses) for assertions.
 func drainStreamEvents(ch <-chan stream.Event, n int) []stream.Event {
@@ -185,4 +292,13 @@ func drainStreamEvents(ch <-chan stream.Event, n int) []stream.Event {
 		}
 	}
 	return out
+}
+
+func assertStreamAnswerRunnerNotStarted(t *testing.T, started <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-started:
+		t.Fatal("runner must not start for invalid prepared answer stream")
+	default:
+	}
 }

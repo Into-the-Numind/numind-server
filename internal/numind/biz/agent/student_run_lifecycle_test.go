@@ -30,6 +30,7 @@ type lifecycleRunner struct {
 	cancelCalled map[uint64]bool
 	runResult    *RunResult
 	runErr       error
+	onCancel     func(uint64)
 }
 
 func (m *lifecycleRunner) Run(_ context.Context, _ RunRequest) (*RunResult, error) {
@@ -43,6 +44,9 @@ func (m *lifecycleRunner) Cancel(runID uint64) bool {
 		m.cancelCalled = make(map[uint64]bool)
 	}
 	m.cancelCalled[runID] = true
+	if m.onCancel != nil {
+		m.onCancel(runID)
+	}
 	return true
 }
 
@@ -70,12 +74,14 @@ func (s *lifecycleRunStore) Get(_ context.Context, id uint64) (*model.AgentRun, 
 	}
 	return r, nil
 }
-func (s *lifecycleRunStore) UpdateState(_ context.Context, id uint64, status, _ string, _ *time.Time) error {
+func (s *lifecycleRunStore) UpdateState(_ context.Context, id uint64, status, reason string, endedAt *time.Time) error {
 	r, ok := s.runs[id]
 	if !ok {
 		return errors.New("not found")
 	}
 	r.Status = status
+	r.StateReason = reason
+	r.EndedAt = endedAt
 	return nil
 }
 func (s *lifecycleRunStore) WriteTurn(_ context.Context, _ uint64, _ json.RawMessage) error {
@@ -176,6 +182,14 @@ type lifecycleSkillStore struct {
 
 func newLifecycleSkillStore() *lifecycleSkillStore {
 	return &lifecycleSkillStore{defs: make(map[uint64]*model.AgentDefinition)}
+}
+
+func setupStudentRunServiceForTest(t *testing.T) (*StudentRunService, *lifecycleRunStore) {
+	t.Helper()
+	runStore := newLifecycleRunStore()
+	skillStore := newLifecycleSkillStore()
+	skillStore.defs[1] = &model.AgentDefinition{ID: 1, ParentUserID: 123, IsActive: true}
+	return NewStudentRunService(&lifecycleRunner{}, runStore, skillStore, nil, nil, nil), runStore
 }
 
 func (s *lifecycleSkillStore) GetByIDIncludeInactive(_ context.Context, id uint64) (*model.AgentDefinition, error) {
@@ -349,6 +363,34 @@ func TestStudentRunService_Cancel_HappyPath(t *testing.T) {
 	if !runner.cancelCalled[run.ID] {
 		t.Error("Cancel was not forwarded to runner")
 	}
+}
+
+func TestCancel_CancelsSupervisorBeforeRunnerRegistered(t *testing.T) {
+	var order []string
+	runner := &lifecycleRunner{
+		onCancel: func(uint64) {
+			order = append(order, "runner")
+		},
+	}
+	runStore := newLifecycleRunStore()
+
+	userID := uint(5)
+	run := &model.AgentRun{UserID: userID, Status: "running"}
+	require.NoError(t, runStore.Create(context.Background(), run))
+
+	svc := NewStudentRunService(runner, runStore, nil, nil, nil, nil)
+	done := make(chan struct{})
+	require.True(t, svc.streamExecutions.Start(run.ID, func() {
+		order = append(order, "supervisor")
+	}, done))
+	defer func() {
+		svc.streamExecutions.Finish(run.ID)
+		close(done)
+	}()
+
+	require.NoError(t, svc.Cancel(context.Background(), userID, run.ID))
+	require.Equal(t, []string{"supervisor", "runner"}, order)
+	require.True(t, runner.cancelCalled[run.ID])
 }
 
 func TestStudentRunService_Cancel_WrongOwner(t *testing.T) {
@@ -644,6 +686,38 @@ func TestComposeAttachmentInput_UsesIDsWithoutInjectingParsedBodyAndKeepsURLFall
 	require.Len(t, display, 2)
 	assert.Equal(t, "managed.docx", display[0].Filename)
 	assert.Equal(t, "legacy.txt", display[1].Filename)
+}
+
+func TestPrepareStreamRun_PrecreatesRunningRunWithoutSubscriptionLock(t *testing.T) {
+	s, runs := setupStudentRunServiceForTest(t)
+	prepared, err := s.PrepareStreamRun(context.Background(), 123, CreateRunRequest{
+		AgentDefinitionID: 1,
+		Message:           "hello",
+	})
+	require.NoError(t, err)
+	require.NotZero(t, prepared.RunID)
+	require.Equal(t, uint(123), prepared.UserID)
+	require.Equal(t, "hello", prepared.Request.Message)
+	require.NotEmpty(t, prepared.SessionID)
+	require.Equal(t, prepared.SessionID, prepared.Request.SessionID)
+	require.True(t, s.streamLock.Acquire(prepared.RunID))
+	s.ReleaseStreamLock(prepared.RunID)
+	run, err := runs.Get(context.Background(), prepared.RunID)
+	require.NoError(t, err)
+	require.Equal(t, "running", run.Status)
+	require.Equal(t, prepared.SessionID, run.SessionID)
+}
+
+func TestAcquireStreamLock_RemainsCompatibilityWrapper(t *testing.T) {
+	s, _ := setupStudentRunServiceForTest(t)
+	runID, acquired, err := s.AcquireStreamLock(context.Background(), 123, CreateRunRequest{
+		AgentDefinitionID: 1,
+		Message:           "hello",
+	})
+	require.NoError(t, err)
+	require.True(t, acquired)
+	require.NotZero(t, runID)
+	s.ReleaseStreamLock(runID)
 }
 
 func TestAcquireStreamLock_PersistsInitialUserTurnWithAttachment(t *testing.T) {

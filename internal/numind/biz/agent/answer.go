@@ -210,10 +210,13 @@ func (s *StudentRunService) Answer(ctx context.Context, userID uint, runID uint6
 	return &AnswerResponse{RunID: runID, Status: "resumed"}, nil
 }
 
-// AnswerStream handles POST /v1/agent-runs/:id/answer-stream business logic
+// AnswerStream handles the legacy caller-owned answer-stream resume path
 // (streaming resume path, issue4). It shares validateAndPersistAnswer with the
 // poll path (Answer), then drives runner.RunStream on the CALLER's ctx (NOT
 // detached — the controller's SSE pump goroutine owns the lifecycle and ch).
+// Browser controllers should use StartPreparedAnswerStream after the supervised
+// answer-stream feature is wired; this method remains for compatibility tests
+// and internal callers that explicitly own the stream channel lifecycle.
 // RunStream streams token_delta / reasoning_delta / tool_call_* / question_prompt
 // / terminal events onto ch so the resumed leg surfaces streamed assistant prose
 // instead of poll-only tool narration. ch is buffered + owned by the caller

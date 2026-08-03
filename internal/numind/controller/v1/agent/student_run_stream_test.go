@@ -1,22 +1,21 @@
 package agent
 
-// student_run_stream_test.go tests the CreateStream SSE controller method.
-//
-// Strategy: a testStreamController wraps a streamingRunSvc stub so we can
-// inject events and verify the SSE wire format without real DB / runner wiring.
-// The concrete StudentRunController.CreateStream is exercised indirectly via
-// a thin wrapper that replaces only the service dependency.
+// student_run_stream_test.go tests the CreateStream observer-only SSE
+// controller path. Test controllers below keep only the production
+// auth/bind/prepare/start shell; all SSE observation uses the shared helpers
+// from student_run_stream.go so tests do not drift into a second stream loop.
 
 import (
 	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
-	"io"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -24,158 +23,209 @@ import (
 
 	agentbiz "numind-server/internal/numind/biz/agent"
 	"numind-server/internal/numind/biz/agent/stream"
+	"numind-server/internal/pkg/core"
+	"numind-server/internal/pkg/errno"
+	"numind-server/internal/pkg/langfuse"
 	"numind-server/internal/pkg/model"
 )
 
-// ---------------------------------------------------------------------------
-// Stub streaming service
-// ---------------------------------------------------------------------------
+type observerStreamSvc struct {
+	mu sync.Mutex
 
-type stubStreamSvc struct {
-	acquireRunID uint64
-	acquiredOK   bool
-	acquireErr   error
-	// events to push before close; nil means close immediately
-	events []stream.Event
-	// runStreamErr is returned from RunStream (after events)
-	runStreamErr error
-	// postEventsBlock simulates finalizeRun work (WriteTurn / UpdateState) that
-	// continues running inside the RunStream goroutine AFTER the terminal event
-	// has been pushed to the channel. The channel is only closed when RunStream
-	// returns (via deferred close in the handler goroutine), so a correctly
-	// implemented controller should NOT return until this block elapses.
-	postEventsBlock time.Duration
-	// returnedAt records when RunStream returned (i.e. just before close(ch) runs).
-	// Used by tests to assert handler ServeHTTP did not return before this point.
-	returnedAt chan time.Time
+	prepared   *agentbiz.PreparedStreamRun
+	prepareErr error
+
+	startOK       bool
+	answerStartOK bool
+	answerErr     error
+
+	subscribeErr error
+	events       <-chan stream.PublishedEvent
+
+	prepareCalls     int
+	startCalls       int
+	answerStartCalls int
+	subscribeCalls   int
+
+	order []string
+
+	started          chan struct{}
+	answerStarted    chan struct{}
+	subscribeBlock   <-chan struct{}
+	subscribeEntered chan struct{}
+	subscribeDone    chan struct{}
 }
 
-func (s *stubStreamSvc) AcquireStreamLock(_ context.Context, _ uint, _ agentbiz.CreateRunRequest) (uint64, bool, error) {
-	return s.acquireRunID, s.acquiredOK, s.acquireErr
-}
-func (s *stubStreamSvc) ReleaseStreamLock(_ uint64) {}
-
-// AcquireResumeStreamLock + AnswerStream satisfy the expanded streamingRunSvc
-// seam (issue4). The CreateStream tests never exercise the resume path, so these
-// are inert stubs.
-func (s *stubStreamSvc) AcquireResumeStreamLock(_ uint64) bool { return true }
-func (s *stubStreamSvc) AnswerStream(_ context.Context, _ uint, _ uint64, _ agentbiz.AnswerRequest, ch chan<- stream.Event) (*agentbiz.RunResult, error) {
-	return nil, nil
-}
-func (s *stubStreamSvc) RunStream(_ context.Context, _ uint, _ agentbiz.CreateRunRequest, _ uint64, ch chan<- stream.Event) (*agentbiz.RunResult, error) {
-	for _, ev := range s.events {
-		ch <- ev
+func newObserverStreamSvc() *observerStreamSvc {
+	return &observerStreamSvc{
+		prepared: &agentbiz.PreparedStreamRun{
+			RunID:     10,
+			SessionID: "sess-10",
+			UserID:    42,
+			Request: agentbiz.CreateRunRequest{
+				AgentDefinitionID: 1,
+				Message:           "hello streaming",
+			},
+		},
+		startOK:       true,
+		answerStartOK: true,
 	}
-	if s.postEventsBlock > 0 {
-		time.Sleep(s.postEventsBlock)
+}
+
+func (s *observerStreamSvc) record(step string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.order = append(s.order, step)
+}
+
+func (s *observerStreamSvc) PrepareStreamRun(_ context.Context, userID uint, req agentbiz.CreateRunRequest) (*agentbiz.PreparedStreamRun, error) {
+	s.record("prepare")
+	s.mu.Lock()
+	s.prepareCalls++
+	s.mu.Unlock()
+	if s.prepareErr != nil {
+		return nil, s.prepareErr
 	}
-	if s.returnedAt != nil {
+	prepared := *s.prepared
+	prepared.UserID = userID
+	prepared.Request = req
+	return &prepared, nil
+}
+
+func (s *observerStreamSvc) StartPreparedStreamRun(prepared *agentbiz.PreparedStreamRun) bool {
+	s.record("start")
+	s.mu.Lock()
+	s.startCalls++
+	s.mu.Unlock()
+	if s.started != nil {
 		select {
-		case s.returnedAt <- time.Now():
+		case s.started <- struct{}{}:
 		default:
 		}
 	}
-	return nil, s.runStreamErr
+	return s.startOK && prepared != nil && prepared.RunID != 0
 }
 
-// ---------------------------------------------------------------------------
-// Thin test controller that uses streamingRunSvc interface for the SSE path
-// ---------------------------------------------------------------------------
+func (s *observerStreamSvc) StartPreparedAnswerStream(_ context.Context, _ uint, _ uint64, _ agentbiz.AnswerRequest) (bool, error) {
+	s.record("answer_start")
+	s.mu.Lock()
+	s.answerStartCalls++
+	s.mu.Unlock()
+	if s.answerStarted != nil {
+		select {
+		case s.answerStarted <- struct{}{}:
+		default:
+		}
+	}
+	return s.answerStartOK, s.answerErr
+}
+
+func (s *observerStreamSvc) SubscribeRunEvents(ctx context.Context, _ uint, _ uint64, _ string) (<-chan stream.PublishedEvent, error) {
+	s.record("subscribe")
+	s.mu.Lock()
+	s.subscribeCalls++
+	s.mu.Unlock()
+	if s.subscribeEntered != nil {
+		select {
+		case s.subscribeEntered <- struct{}{}:
+		default:
+		}
+	}
+	if s.subscribeBlock != nil {
+		select {
+		case <-s.subscribeBlock:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	if s.subscribeErr != nil {
+		return nil, s.subscribeErr
+	}
+	if s.subscribeDone != nil {
+		go func() {
+			<-ctx.Done()
+			close(s.subscribeDone)
+		}()
+	}
+	if s.events != nil {
+		return s.events, nil
+	}
+	ch := make(chan stream.PublishedEvent)
+	close(ch)
+	return ch, nil
+}
+
+func (s *observerStreamSvc) snapshot() (order []string, prepareCalls, startCalls, answerStartCalls, subscribeCalls int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	order = append([]string(nil), s.order...)
+	return order, s.prepareCalls, s.startCalls, s.answerStartCalls, s.subscribeCalls
+}
 
 type testStreamController struct {
-	svc streamingRunSvc
+	svc    streamingRunSvc
+	userID uint
+}
+
+func (h *testStreamController) currentUser() *model.User {
+	userID := h.userID
+	if userID == 0 {
+		userID = 42
+	}
+	user := &model.User{}
+	user.ID = userID
+	return user
 }
 
 func (h *testStreamController) CreateStream(c *gin.Context) {
-	// Inline the user injection since middleware isn't wired in unit tests.
-	var user model.User
-	user.ID = 42
-
+	user := h.currentUser()
 	var req agentbiz.CreateRunRequest
-	if bindErr := c.ShouldBindJSON(&req); bindErr != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": bindErr.Error()})
+	if err := c.ShouldBindJSON(&req); err != nil {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("%s", err.Error()), nil)
 		return
 	}
 
-	runID, acquired, err := h.svc.AcquireStreamLock(c.Request.Context(), user.ID, req)
+	prepared, err := h.svc.PrepareStreamRun(c.Request.Context(), user.ID, req)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": err.Error()})
+		core.WriteResponse(c, err, nil)
 		return
 	}
-	if !acquired {
-		// Mirror the real CreateStream 409 body shape (P1 fix: data.run_id, not top-level run_id).
-		c.JSON(http.StatusConflict, gin.H{
-			"code":    "FailedOperation.AgentStreamAlreadyAttached",
-			"message": "Agent stream already attached for this run.",
-			"data":    gin.H{"run_id": runID},
-		})
+	_ = h.svc.StartPreparedStreamRun(prepared)
+	if switchToSSE(c) != nil {
 		return
 	}
-	defer h.svc.ReleaseStreamLock(runID)
-
-	c.Header("Content-Type", "text/event-stream")
-	c.Header("Cache-Control", "no-cache")
-	c.Header("Connection", "keep-alive")
-	c.Header("X-Accel-Buffering", "no")
-	c.Status(http.StatusOK)
-
-	w := c.Writer
-	// Mirror production CreateStream verbatim: flush SSE first byte so the
-	// response status/headers reach the client before RunStream prep runs.
-	_, _ = fmt.Fprint(w, ":ok\n\n")
-	w.Flush()
-
-	eventCh := make(chan stream.Event, 256)
-
-	runCtx, runCancel := context.WithCancel(c.Request.Context())
-	defer runCancel()
-
-	go func() {
-		defer close(eventCh)
-		_, _ = h.svc.RunStream(runCtx, user.ID, req, runID, eventCh)
-	}()
-
-	pingTicker := time.NewTicker(ssePingInterval)
-	defer pingTicker.Stop()
-
-	// Mirror production: drain mode after terminal/error so finalizeRun can finish.
-	terminalSeen := false
-	doneCh := c.Request.Context().Done()
-
-	for {
-		select {
-		case <-doneCh:
-			if terminalSeen {
-				doneCh = nil
-				continue
-			}
-			return
-		case <-pingTicker.C:
-			if terminalSeen {
-				continue
-			}
-			_, _ = w.Write([]byte(":ping\n\n"))
-			w.Flush()
-		case ev, ok := <-eventCh:
-			if !ok {
-				return
-			}
-			if terminalSeen {
-				continue
-			}
-			data, _ := json.Marshal(ev)
-			_, _ = w.Write([]byte("data: " + string(data) + "\n\n"))
-			w.Flush()
-			if ev.Type == stream.EventTerminal || ev.Type == stream.EventError {
-				terminalSeen = true
-			}
-		}
-	}
+	observeRunEvents(c, h.svc, user.ID, prepared.RunID, "", &observerFallbackStart{
+		runID:     prepared.RunID,
+		sessionID: prepared.SessionID,
+	})
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
+func (h *testStreamController) AnswerStream(c *gin.Context) {
+	user := h.currentUser()
+	runID, ok := mustParseRunID(c)
+	if !ok {
+		return
+	}
+	var req agentbiz.AnswerRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("%s", err.Error()), nil)
+		return
+	}
+
+	started, err := h.svc.StartPreparedAnswerStream(c.Request.Context(), user.ID, runID, req)
+	if err != nil {
+		core.WriteResponse(c, err, nil)
+		return
+	}
+	if !started {
+		subscribeThenObserveRunEvents(c, h.svc, user.ID, runID, "", nil)
+		return
+	}
+	if switchToSSE(c) != nil {
+		return
+	}
+	observeRunEvents(c, h.svc, user.ID, runID, "", nil)
+}
 
 func newStreamRequest(t *testing.T) *http.Request {
 	t.Helper()
@@ -188,16 +238,41 @@ func newStreamRequest(t *testing.T) *http.Request {
 	return req
 }
 
-// parseSSSEFrames reads all "data: <json>" lines from the recorder body.
+func newStreamServer(svc *observerStreamSvc) *httptest.Server {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	ctrl := &testStreamController{svc: svc}
+	r.POST("/v1/agent-runs/stream", ctrl.CreateStream)
+	return httptest.NewServer(r)
+}
+
+func streamTestHTTPClient() *http.Client {
+	return &http.Client{Timeout: 2 * time.Second}
+}
+
+func publishedEvent(t *testing.T, cursor string, eventType stream.EventType, runID, seq uint64) stream.PublishedEvent {
+	t.Helper()
+	ev, err := stream.Encode(eventType, nil, seq, runID, 0)
+	if err != nil {
+		t.Fatalf("encode event: %v", err)
+	}
+	return stream.PublishedEvent{Cursor: cursor, Event: ev}
+}
+
+func publishedTerminalEvent(t *testing.T, cursor string, runID, seq uint64, reason agentbiz.TerminalReason) stream.PublishedEvent {
+	t.Helper()
+	ev, err := stream.Encode(stream.EventTerminal, stream.TerminalPayload{
+		Reason: string(reason),
+	}, seq, runID, 0)
+	if err != nil {
+		t.Fatalf("encode terminal event: %v", err)
+	}
+	return stream.PublishedEvent{Cursor: cursor, Event: ev}
+}
+
 func parseSSEFrames(body string) []stream.Event {
 	var events []stream.Event
-	scanner := bufio.NewScanner(strings.NewReader(body))
-	for scanner.Scan() {
-		line := scanner.Text()
-		if !strings.HasPrefix(line, "data: ") {
-			continue
-		}
-		payload := strings.TrimPrefix(line, "data: ")
+	for _, payload := range parseSSEDataLines(body) {
 		var ev stream.Event
 		if err := json.Unmarshal([]byte(payload), &ev); err == nil {
 			events = append(events, ev)
@@ -206,26 +281,171 @@ func parseSSEFrames(body string) []stream.Event {
 	return events
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
+func parseSSEDataLines(body string) []string {
+	var lines []string
+	scanner := bufio.NewScanner(strings.NewReader(body))
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "data: ") {
+			lines = append(lines, strings.TrimPrefix(line, "data: "))
+		}
+	}
+	return lines
+}
 
-// TestCreateStream_HappyPath verifies that 5 events (3 token_delta + terminal)
-// flow through the controller and appear as SSE frames.
+func setupObserverLangfuse(t *testing.T) *[]*langfuse.IngestionEvent {
+	t.Helper()
+	prev := langfuse.C
+	langfuse.C = langfuse.NewTestClient()
+	var events []*langfuse.IngestionEvent
+	langfuse.C.InstallEventHook(func(e *langfuse.IngestionEvent) {
+		events = append(events, e)
+	})
+	t.Cleanup(func() {
+		langfuse.C = prev
+	})
+	return &events
+}
+
+func newObservedGinContext(t *testing.T, ctx context.Context) *gin.Context {
+	t.Helper()
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet, "/v1/agent-runs/10/events", nil).WithContext(ctx)
+	return c
+}
+
+func spanUpdateOutput(t *testing.T, events []*langfuse.IngestionEvent) map[string]any {
+	t.Helper()
+	for _, event := range events {
+		if event.Type != "span-update" {
+			continue
+		}
+		body, ok := event.Body.(*langfuse.SpanBody)
+		if !ok {
+			t.Fatalf("expected span-update body to be *langfuse.SpanBody, got %T", event.Body)
+		}
+		output, ok := body.Output.(map[string]any)
+		if !ok {
+			t.Fatalf("expected span-update output to be map[string]any, got %T", body.Output)
+		}
+		return output
+	}
+	t.Fatalf("missing span-update event; got %v", langfuseEventTypes(events))
+	return nil
+}
+
+func langfuseEventTypes(events []*langfuse.IngestionEvent) []string {
+	types := make([]string, len(events))
+	for i, event := range events {
+		types[i] = event.Type
+	}
+	return types
+}
+
+func assertNoLangfuseGenerations(t *testing.T, events []*langfuse.IngestionEvent) {
+	t.Helper()
+	for _, event := range events {
+		if strings.Contains(event.Type, "generation") {
+			t.Fatalf("observer SSE must not create Langfuse generation events; got %v", langfuseEventTypes(events))
+		}
+	}
+}
+
 func TestCreateStream_HappyPath(t *testing.T) {
-	events := []stream.Event{
-		{Type: stream.EventTokenDelta, Seq: 1, RunID: 10},
-		{Type: stream.EventTokenDelta, Seq: 2, RunID: 10},
-		{Type: stream.EventTokenDelta, Seq: 3, RunID: 10},
-		{Type: stream.EventStepDone, Seq: 4, RunID: 10},
-		{Type: stream.EventTerminal, Seq: 5, RunID: 10},
-	}
+	events := make(chan stream.PublishedEvent, 5)
+	events <- publishedEvent(t, "1000-1", stream.EventTokenDelta, 10, 1)
+	events <- publishedEvent(t, "1000-2", stream.EventTokenDelta, 10, 2)
+	events <- publishedEvent(t, "1000-3", stream.EventTokenDelta, 10, 3)
+	events <- publishedEvent(t, "1000-4", stream.EventStepDone, 10, 4)
+	events <- publishedEvent(t, "1000-5", stream.EventTerminal, 10, 5)
+	close(events)
+	svc := newObserverStreamSvc()
+	svc.events = events
 
-	svc := &stubStreamSvc{
-		acquireRunID: 10,
-		acquiredOK:   true,
-		events:       events,
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.POST("/v1/agent-runs/stream", (&testStreamController{svc: svc}).CreateStream)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, newStreamRequest(t))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body: %s", w.Code, w.Body.String())
 	}
+	if ct := w.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/event-stream") {
+		t.Fatalf("expected Content-Type text/event-stream, got %q", ct)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "id: 1000-5\n") {
+		t.Fatalf("expected SSE cursor ids in body:\n%s", body)
+	}
+	frames := parseSSEFrames(body)
+	if len(frames) != 5 {
+		t.Fatalf("expected 5 SSE data frames, got %d\nbody:\n%s", len(frames), body)
+	}
+	if frames[0].Type != stream.EventTokenDelta || frames[len(frames)-1].Type != stream.EventTerminal {
+		t.Fatalf("unexpected frame sequence: first=%s last=%s", frames[0].Type, frames[len(frames)-1].Type)
+	}
+}
+
+func TestObserveRunEvents_RecordsObserverDisconnectNotAbort(t *testing.T) {
+	captured := setupObserverLangfuse(t)
+	traceID := "trace-observer-disconnect"
+	ctx, cancel := context.WithCancel(langfuse.WithTrace(context.Background(), traceID))
+	cancel()
+	c := newObservedGinContext(t, ctx)
+
+	events := make(chan stream.PublishedEvent)
+	writePublishedRunEvents(c, 10, events)
+
+	assertNoLangfuseGenerations(t, *captured)
+	output := spanUpdateOutput(t, *captured)
+	if got := output["disconnect_reason"]; got != "observer_disconnect" {
+		t.Fatalf("expected disconnect_reason observer_disconnect, got %v", got)
+	}
+	oldDisconnectReason := strings.Join([]string{"client", "disconnect"}, "_")
+	oldAbortReason := strings.Join([]string{"aborted", "streaming"}, "_")
+	serialized := strings.Join([]string{
+		langfuseEventTypes(*captured)[0],
+		output["disconnect_reason"].(string),
+	}, " ")
+	if strings.Contains(serialized, oldDisconnectReason) || strings.Contains(serialized, oldAbortReason) {
+		t.Fatalf("observer disconnect must not be recorded as execution abort; events=%v output=%v", langfuseEventTypes(*captured), output)
+	}
+}
+
+func TestObserveRunEvents_DoesNotCreateNewGeneration(t *testing.T) {
+	captured := setupObserverLangfuse(t)
+	traceID := "trace-observer-complete"
+	c := newObservedGinContext(t, langfuse.WithTrace(context.Background(), traceID))
+	events := make(chan stream.PublishedEvent, 1)
+	events <- publishedTerminalEvent(t, "1000-1", 10, 1, agentbiz.TerminalCompleted)
+	close(events)
+
+	writePublishedRunEvents(c, 10, events)
+
+	if got := langfuseEventTypes(*captured); strings.Join(got, ",") != "span-create,span-update" {
+		t.Fatalf("expected only observer span events, got %v", got)
+	}
+	assertNoLangfuseGenerations(t, *captured)
+	output := spanUpdateOutput(t, *captured)
+	if got := output["disconnect_reason"]; got != "run_complete" {
+		t.Fatalf("expected disconnect_reason run_complete, got %v", got)
+	}
+	if got := output["event_count"]; got != 1 {
+		t.Fatalf("expected event_count=1, got %v", got)
+	}
+}
+
+func TestCreateStream_StartFalseStillObservesAndDoesNot409(t *testing.T) {
+	events := make(chan stream.PublishedEvent, 1)
+	events <- publishedEvent(t, "1000-1", stream.EventTerminal, 77, 1)
+	close(events)
+	svc := newObserverStreamSvc()
+	svc.prepared.RunID = 77
+	svc.startOK = false
+	svc.events = events
 	ctrl := &testStreamController{svc: svc}
 
 	gin.SetMode(gin.TestMode)
@@ -236,44 +456,76 @@ func TestCreateStream_HappyPath(t *testing.T) {
 	r.ServeHTTP(w, newStreamRequest(t))
 
 	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d — body: %s", w.Code, w.Body.String())
+		t.Fatalf("expected observer SSE 200, got %d; body: %s", w.Code, w.Body.String())
 	}
-
-	ct := w.Header().Get("Content-Type")
-	if !strings.HasPrefix(ct, "text/event-stream") {
-		t.Errorf("expected Content-Type text/event-stream, got %q", ct)
+	if _, _, _, _, subscribeCalls := svc.snapshot(); subscribeCalls != 1 {
+		t.Fatalf("SubscribeRunEvents should be called when execution is already active, got %d", subscribeCalls)
 	}
-
-	body := w.Body.String()
-	frames := parseSSEFrames(body)
-	if len(frames) != 5 {
-		t.Errorf("expected 5 SSE frames, got %d\nbody:\n%s", len(frames), body)
-	}
-	if len(frames) > 0 {
-		if frames[0].Type != stream.EventTokenDelta {
-			t.Errorf("expected first frame type=token_delta, got %s", frames[0].Type)
-		}
-	}
-	if len(frames) == 5 && frames[4].Type != stream.EventTerminal {
-		t.Errorf("expected last frame type=terminal, got %s", frames[4].Type)
-	}
-	// Verify wire format: each frame has run_id set.
-	for i, f := range frames {
-		if f.RunID != 10 {
-			t.Errorf("frame[%d]: expected run_id=10, got %d", i, f.RunID)
-		}
+	frames := parseSSEFrames(w.Body.String())
+	if len(frames) != 1 || frames[0].RunID != 77 {
+		t.Fatalf("expected one observed terminal for run 77, got %+v\nbody:\n%s", frames, w.Body.String())
 	}
 }
 
-// TestCreateStream_409WhenLockNotAcquired verifies that a second connection
-// attempt for the same run gets HTTP 409 with the run_id in the response body.
-func TestCreateStream_409WhenLockNotAcquired(t *testing.T) {
-	svc := &stubStreamSvc{
-		acquireRunID: 77,
-		acquiredOK:   false, // already held by another subscriber
-	}
-	ctrl := &testStreamController{svc: svc}
+func TestCreateStream_ClientDisconnectDoesNotCancelSupervisedRun(t *testing.T) {
+	events := make(chan stream.PublishedEvent)
+	svc := newObserverStreamSvc()
+	svc.events = events
+	svc.started = make(chan struct{}, 1)
+	svc.subscribeDone = make(chan struct{})
+	server := newStreamServer(svc)
+	defer server.Close()
 
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/v1/agent-runs/stream", newStreamRequest(t).Body)
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := streamTestHTTPClient().Do(req)
+	if err != nil {
+		t.Fatalf("client.Do: %v", err)
+	}
+
+	select {
+	case <-svc.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("StartPreparedStreamRun was not called")
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	_ = resp.Body.Close()
+
+	select {
+	case <-svc.subscribeDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("observer context was not cancelled after client disconnect")
+	}
+	_, _, startCalls, _, _ := svc.snapshot()
+	if startCalls != 1 {
+		t.Fatalf("expected one supervised start, got %d", startCalls)
+	}
+}
+
+func TestCreateStream_ClientDisconnectBeforeFirstWriteStillStartsPreparedRun(t *testing.T) {
+	svc := newObserverStreamSvc()
+	ctx, _ := gin.CreateTestContext(&failingResponseWriter{header: make(http.Header)})
+	ctx.Request = newStreamRequest(t)
+
+	(&testStreamController{svc: svc}).CreateStream(ctx)
+
+	_, _, startCalls, _, subscribeCalls := svc.snapshot()
+	if startCalls != 1 {
+		t.Fatalf("StartPreparedStreamRun must run before the first SSE write, got %d calls", startCalls)
+	}
+	if subscribeCalls != 0 {
+		t.Fatalf("SubscribeRunEvents should not run when first SSE write fails, got %d calls", subscribeCalls)
+	}
+}
+
+func TestCreateStream_StartsPreparedRunBeforeObserving(t *testing.T) {
+	svc := newObserverStreamSvc()
+	ctrl := &testStreamController{svc: svc}
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	r.POST("/v1/agent-runs/stream", ctrl.CreateStream)
@@ -281,299 +533,117 @@ func TestCreateStream_409WhenLockNotAcquired(t *testing.T) {
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, newStreamRequest(t))
 
-	if w.Code != http.StatusConflict {
-		t.Fatalf("expected 409, got %d — body: %s", w.Code, w.Body.String())
-	}
-
-	var body map[string]any
-	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
-		t.Fatalf("unmarshal 409 body: %v", err)
-	}
-	// Per spec §6.1 the 409 body shape is {code, message, data: {run_id}}.
-	// P1 fix: assert data.run_id is present and correct, not top-level run_id
-	// (the original assertion was broken — core.WriteResponse + non-nil err
-	// silently drops the Data param, so the real controller never wrote
-	// top-level run_id).
-	dataVal, ok := body["data"]
-	if !ok {
-		t.Fatalf("expected data field in 409 response, got: %v", body)
-	}
-	dataMap, ok := dataVal.(map[string]any)
-	if !ok {
-		t.Fatalf("expected data to be object, got %T", dataVal)
-	}
-	runIDVal, ok := dataMap["run_id"]
-	if !ok {
-		t.Errorf("expected data.run_id field in 409 response, got: %v", body)
-	}
-	if int(runIDVal.(float64)) != 77 {
-		t.Errorf("expected data.run_id=77, got %v", runIDVal)
-	}
-	if body["code"] != "FailedOperation.AgentStreamAlreadyAttached" {
-		t.Errorf("expected code=FailedOperation.AgentStreamAlreadyAttached, got %v", body["code"])
+	order, _, _, _, _ := svc.snapshot()
+	want := []string{"prepare", "start", "subscribe"}
+	if strings.Join(order, ",") != strings.Join(want, ",") {
+		t.Fatalf("expected call order %v, got %v", want, order)
 	}
 }
 
-// TestCreateStream_ClientDisconnect verifies that when the client context is
-// cancelled the controller exits cleanly and no goroutine blocks indefinitely.
-// We simulate disconnect by cancelling the request context BEFORE the service
-// can push events, and the stub blocks until the context is cancelled.
-func TestCreateStream_ClientDisconnect(t *testing.T) {
-	// A service that blocks RunStream until context cancels, then returns.
-	blockedSvc := &blockingStreamSvc{acquireRunID: 99}
+func TestCreateStream_SuccessFlushesBeforeSubscribe(t *testing.T) {
+	svc := newObserverStreamSvc()
+	svc.subscribeBlock = make(chan struct{})
+	svc.subscribeEntered = make(chan struct{}, 1)
+	server := newStreamServer(svc)
+	defer server.Close()
 
-	ctrl := &testStreamController{svc: blockedSvc}
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/v1/agent-runs/stream", newStreamRequest(t).Body)
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := streamTestHTTPClient().Do(req)
+	if err != nil {
+		t.Fatalf("client.Do should receive SSE headers before SubscribeRunEvents returns: %v", err)
+	}
+	defer resp.Body.Close()
 
+	buf := make([]byte, 16)
+	n, err := resp.Body.Read(buf)
+	if err != nil {
+		t.Fatalf("read first SSE bytes: %v", err)
+	}
+	if n == 0 || buf[0] != ':' {
+		t.Fatalf("expected initial SSE comment before subscribe completes, n=%d chunk=%q", n, buf[:n])
+	}
+	select {
+	case <-svc.subscribeEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("SubscribeRunEvents was not attempted after first-byte flush")
+	}
+}
+
+func TestCreateStream_BrokerUnavailableEmitsObserverFallbackStart(t *testing.T) {
+	svc := newObserverStreamSvc()
+	svc.prepared.RunID = 123
+	svc.prepared.SessionID = "sess-1"
+	svc.subscribeErr = stream.ErrRunEventBrokerUnavailable
+	ctrl := &testStreamController{svc: svc}
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	r.POST("/v1/agent-runs/stream", ctrl.CreateStream)
-
-	ctx, cancel := context.WithCancel(context.Background())
-
-	body, _ := json.Marshal(map[string]any{
-		"agent_skill_id": 1,
-		"input_text":     "hello",
-	})
-	req := httptest.NewRequest(http.MethodPost, "/v1/agent-runs/stream", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	req = req.WithContext(ctx)
 
 	w := httptest.NewRecorder()
+	r.ServeHTTP(w, newStreamRequest(t))
 
-	// Cancel context shortly after the handler starts.
-	go func() {
-		time.Sleep(20 * time.Millisecond)
-		cancel()
-	}()
-
-	// ServeHTTP blocks until handler returns; it should return promptly after
-	// context cancellation.
-	done := make(chan struct{})
-	go func() {
-		r.ServeHTTP(w, req)
-		close(done)
-	}()
-
-	select {
-	case <-done:
-		// Handler returned — good.
-	case <-time.After(2 * time.Second):
-		t.Fatal("handler did not return within 2s after client disconnect")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected SSE fallback 200, got %d; body: %s", w.Code, w.Body.String())
+	}
+	lines := parseSSEDataLines(w.Body.String())
+	if len(lines) != 1 {
+		t.Fatalf("expected one data-only fallback frame, got %d\nbody:\n%s", len(lines), w.Body.String())
+	}
+	expected := `{"type":"stream_start","run_id":123,"data":{"session_id":"sess-1","run_id":123,"observer_fallback":true}}`
+	if !jsonEqual(lines[0], expected) {
+		t.Fatalf("fallback frame mismatch\nwant: %s\n got: %s", expected, lines[0])
 	}
 }
 
-// blockingStreamSvc is a streamingRunSvc stub whose RunStream blocks until ctx
-// is cancelled. Used to test client-disconnect handling.
-type blockingStreamSvc struct {
-	acquireRunID uint64
-}
-
-func (s *blockingStreamSvc) AcquireStreamLock(_ context.Context, _ uint, _ agentbiz.CreateRunRequest) (uint64, bool, error) {
-	return s.acquireRunID, true, nil
-}
-func (s *blockingStreamSvc) ReleaseStreamLock(_ uint64) {}
-func (s *blockingStreamSvc) RunStream(ctx context.Context, _ uint, _ agentbiz.CreateRunRequest, _ uint64, _ chan<- stream.Event) (*agentbiz.RunResult, error) {
-	<-ctx.Done()
-	return nil, ctx.Err()
-}
-
-// AcquireResumeStreamLock + AnswerStream satisfy the expanded streamingRunSvc
-// seam (issue4); blockingStreamSvc only exercises the CreateStream path.
-func (s *blockingStreamSvc) AcquireResumeStreamLock(_ uint64) bool { return true }
-func (s *blockingStreamSvc) AnswerStream(ctx context.Context, _ uint, _ uint64, _ agentbiz.AnswerRequest, _ chan<- stream.Event) (*agentbiz.RunResult, error) {
-	<-ctx.Done()
-	return nil, ctx.Err()
-}
-
-// TestCreateStream_FirstByteFlushedBeforeRunStream REPRODUCES the bug observed
-// on dev 2026-05-28 (agent_run 43/44): RunStream's ~450 lines of prep work
-// (skill load / prompt build / memory load / model resolve) run BEFORE any
-// event is emitted into the SSE channel. During that prep window the
-// controller has called c.Status(200) but never Flushed, so the client's
-// fetch() reader sees the TCP connection idle. After ~10s some layer
-// (browser / OS / proxy) closes the connection and the user sees nothing.
-//
-// Contract: the controller MUST write at least one byte to the response
-// (e.g. an SSE comment line ":ok\n\n") and Flush it BEFORE the first
-// runtime event arrives, so the HTTP response status line + headers are
-// pushed to the client immediately.
-//
-// Test strategy: blockingStreamSvc holds RunStream until ctx is cancelled
-// (never emits an event). We use httptest.NewServer to get a real socket so
-// the response body is streamed (httptest.NewRecorder buffers everything
-// until the handler returns, which would hide the bug). Then we read the
-// first chunk from resp.Body with a 200 ms deadline and assert that at
-// least one byte arrived.
-func TestCreateStream_FirstByteFlushedBeforeRunStream(t *testing.T) {
-	svc := &blockingStreamSvc{acquireRunID: 123}
-	ctrl := &testStreamController{svc: svc}
-
-	gin.SetMode(gin.TestMode)
-	r := gin.New()
-	r.POST("/v1/agent-runs/stream", ctrl.CreateStream)
-
-	server := httptest.NewServer(r)
+func TestCreateStream_FirstByteFlushedBeforePublishedEvent(t *testing.T) {
+	events := make(chan stream.PublishedEvent)
+	svc := newObserverStreamSvc()
+	svc.events = events
+	server := newStreamServer(svc)
 	defer server.Close()
 
-	body, _ := json.Marshal(map[string]any{
-		"agent_skill_id": 1,
-		"input_text":     "hello",
-	})
-	req, err := http.NewRequest(http.MethodPost, server.URL+"/v1/agent-runs/stream", bytes.NewReader(body))
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/v1/agent-runs/stream", newStreamRequest(t).Body)
 	if err != nil {
 		t.Fatalf("build request: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-
-	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := streamTestHTTPClient().Do(req)
 	if err != nil {
 		t.Fatalf("client.Do: %v", err)
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200, got %d", resp.StatusCode)
-	}
-
-	// Read with a 200ms deadline. If first byte is never flushed before
-	// RunStream produces output (and RunStream is blocked indefinitely),
-	// this read will be empty (n=0) by the deadline → bug reproduced.
-	type readResult struct {
-		n   int
-		err error
-	}
-	resCh := make(chan readResult, 1)
-	buf := make([]byte, 64)
+	buf := make([]byte, 16)
+	readCh := make(chan int, 1)
 	go func() {
-		n, err := resp.Body.Read(buf)
-		resCh <- readResult{n: n, err: err}
+		n, _ := resp.Body.Read(buf)
+		readCh <- n
 	}()
 
 	select {
-	case r := <-resCh:
-		if r.n == 0 {
-			t.Fatalf("first read returned 0 bytes — controller did not flush first byte before RunStream emit; err=%v", r.err)
+	case n := <-readCh:
+		if n == 0 || buf[0] != ':' {
+			t.Fatalf("expected first SSE byte ':' before any published event, n=%d chunk=%q", n, buf[:n])
 		}
-		// Sanity: the first chunk should be an SSE comment (starts with ':') or
-		// an SSE data frame (starts with 'd' for "data:"). Anything else means
-		// the wire format is wrong.
-		first := buf[0]
-		if first != ':' && first != 'd' {
-			t.Errorf("first byte should be SSE comment ':' or data line 'd', got %q (chunk=%q)", first, buf[:r.n])
-		}
-		// Cancel the blocked RunStream so the test exits cleanly.
-		// Closing resp.Body (via defer) propagates cancel to the server context.
-	// 500 ms >> normal flush latency (~µs) but << original bug window (~10 s),
-	// giving headroom on loaded CI while still definitively reproducing the bug.
 	case <-time.After(500 * time.Millisecond):
-		t.Fatalf("no SSE first byte within 500ms — controller did not Flush before RunStream emit (bug reproduced)")
-	}
-
-	// Drain & discard whatever the server eventually writes so it can return.
-	go io.Copy(io.Discard, resp.Body)
-}
-
-// TestCreateStream_WaitsForRunStreamToFinalize REPRODUCES the bug observed on
-// dev 2026-05-28 (agent_run 45): after the terminal event is emitted into the
-// channel, the controller returns immediately, defers fire (runCancel + Release),
-// and the runCtx is cancelled. But inside the runner goroutine, RunStream is
-// still doing finalizeRun work (WriteTurn writes agent_run.messages to the DB,
-// UpdateState writes status=completed/ended_at). Because the context was just
-// cancelled by the controller's defer, the GORM .Save() call fails with
-// "context canceled" — and `agent_run.messages` stays []. The user then sees
-// an empty session on reload.
-//
-// Contract: the controller MUST wait for RunStream's goroutine to close the
-// event channel before returning. Receiving a terminal event must NOT cause an
-// immediate `return` — the controller must continue selecting on the channel
-// (drain mode) until eventCh closes, so finalizeRun's DB writes complete with
-// a live context.
-//
-// Test strategy: stubStreamSvc emits a terminal event, then sleeps for 200 ms
-// (simulating finalizeRun.WriteTurn DB work), then RunStream returns and
-// `defer close(ch)` fires. We use httptest.NewServer to read the response
-// stream to EOF, then assert the handler returned AFTER RunStream returned.
-// Pre-fix: handler returns ~0 ms after the terminal frame, well before
-// RunStream's 200 ms block ends — test FAILs.
-func TestCreateStream_WaitsForRunStreamToFinalize(t *testing.T) {
-	returnedAt := make(chan time.Time, 1)
-	svc := &stubStreamSvc{
-		acquireRunID: 100,
-		acquiredOK:   true,
-		events: []stream.Event{
-			{Type: stream.EventTokenDelta, Seq: 1, RunID: 100},
-			{Type: stream.EventTerminal, Seq: 2, RunID: 100},
-		},
-		postEventsBlock: 200 * time.Millisecond,
-		returnedAt:      returnedAt,
-	}
-	ctrl := &testStreamController{svc: svc}
-
-	gin.SetMode(gin.TestMode)
-	r := gin.New()
-	r.POST("/v1/agent-runs/stream", ctrl.CreateStream)
-
-	server := httptest.NewServer(r)
-	defer server.Close()
-
-	body, _ := json.Marshal(map[string]any{
-		"agent_skill_id": 1,
-		"input_text":     "hello",
-	})
-	req, err := http.NewRequest(http.MethodPost, server.URL+"/v1/agent-runs/stream", bytes.NewReader(body))
-	if err != nil {
-		t.Fatalf("build request: %v", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		t.Fatalf("client.Do: %v", err)
-	}
-	defer resp.Body.Close()
-
-	// Read until EOF — this returns when the server closes the connection,
-	// i.e. when the handler's ServeHTTP returns.
-	_, _ = io.Copy(io.Discard, resp.Body)
-	handlerReturnedAt := time.Now()
-
-	// Confirm RunStream goroutine actually ran to completion.
-	var runStreamReturnedAt time.Time
-	select {
-	case runStreamReturnedAt = <-returnedAt:
-	case <-time.After(2 * time.Second):
-		t.Fatal("RunStream goroutine did not return — channel was never closed")
-	}
-
-	// Handler must return AFTER RunStream's finalize block ends. With a 200 ms
-	// block, allow up to 50 ms scheduler jitter on the lower bound.
-	if handlerReturnedAt.Before(runStreamReturnedAt) {
-		t.Fatalf("handler returned BEFORE RunStream finalize completed — finalizeRun.WriteTurn would have raced with ctx cancel. handlerReturned=%v runStreamReturned=%v",
-			handlerReturnedAt.Format(time.RFC3339Nano), runStreamReturnedAt.Format(time.RFC3339Nano))
+		t.Fatal("no SSE first byte before first published event")
 	}
 }
 
-// TestCreateStream_ErrorEventTerminatesLoop verifies that an EventError frame
-// switches the controller to drain mode (no longer written to the client) so
-// the goroutine's deferred close(eventCh) is the sole return signal.
 func TestCreateStream_ErrorEventTerminatesLoop(t *testing.T) {
-	events := []stream.Event{
-		{Type: stream.EventTokenDelta, Seq: 1, RunID: 5},
-		{Type: stream.EventError, Seq: 2, RunID: 5},
-		// This event IS read from the channel but is dropped (drain mode):
-		// the controller no longer writes post-terminal/error frames to the
-		// client, even though it keeps draining the channel until close.
-		{Type: stream.EventTokenDelta, Seq: 3, RunID: 5},
-	}
-	svc := &stubStreamSvc{
-		acquireRunID: 5,
-		acquiredOK:   true,
-		events:       events,
-	}
+	events := make(chan stream.PublishedEvent, 3)
+	events <- publishedEvent(t, "1-1", stream.EventTokenDelta, 5, 1)
+	events <- publishedEvent(t, "1-2", stream.EventError, 5, 2)
+	events <- publishedEvent(t, "1-3", stream.EventTokenDelta, 5, 3)
+	close(events)
+	svc := newObserverStreamSvc()
+	svc.prepared.RunID = 5
+	svc.events = events
 	ctrl := &testStreamController{svc: svc}
-
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	r.POST("/v1/agent-runs/stream", ctrl.CreateStream)
@@ -582,11 +652,68 @@ func TestCreateStream_ErrorEventTerminatesLoop(t *testing.T) {
 	r.ServeHTTP(w, newStreamRequest(t))
 
 	frames := parseSSEFrames(w.Body.String())
-	// Should have exactly 2 frames (token_delta + error); the third is not sent.
 	if len(frames) != 2 {
-		t.Errorf("expected 2 frames (token_delta + error), got %d\nbody:\n%s", len(frames), w.Body.String())
+		t.Fatalf("expected token_delta + error only, got %d\nbody:\n%s", len(frames), w.Body.String())
 	}
-	if len(frames) == 2 && frames[1].Type != stream.EventError {
-		t.Errorf("expected second frame type=error, got %s", frames[1].Type)
+	if frames[1].Type != stream.EventError {
+		t.Fatalf("expected second frame type=error, got %s", frames[1].Type)
 	}
 }
+
+func TestCreateStream_WaitingTerminalClosesObserver(t *testing.T) {
+	events := make(chan stream.PublishedEvent, 2)
+	events <- publishedTerminalEvent(t, "1-1", 6, 1, agentbiz.TerminalWaitingForUserChoice)
+	events <- publishedEvent(t, "1-2", stream.EventTokenDelta, 6, 2)
+	close(events)
+	svc := newObserverStreamSvc()
+	svc.prepared.RunID = 6
+	svc.events = events
+	ctrl := &testStreamController{svc: svc}
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.POST("/v1/agent-runs/stream", ctrl.CreateStream)
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, newStreamRequest(t))
+
+	frames := parseSSEFrames(w.Body.String())
+	if len(frames) != 1 {
+		t.Fatalf("expected waiting terminal to close observer before later events, got %d\nbody:\n%s", len(frames), w.Body.String())
+	}
+	if frames[0].Type != stream.EventTerminal {
+		t.Fatalf("expected terminal frame, got %s", frames[0].Type)
+	}
+}
+
+func jsonEqual(got, want string) bool {
+	var gotAny any
+	var wantAny any
+	if err := json.Unmarshal([]byte(got), &gotAny); err != nil {
+		return false
+	}
+	if err := json.Unmarshal([]byte(want), &wantAny); err != nil {
+		return false
+	}
+	return reflect.DeepEqual(gotAny, wantAny)
+}
+
+type failingResponseWriter struct {
+	header http.Header
+	code   int
+}
+
+func (w *failingResponseWriter) Header() http.Header {
+	return w.header
+}
+
+func (w *failingResponseWriter) WriteHeader(code int) {
+	w.code = code
+}
+
+func (w *failingResponseWriter) Write(_ []byte) (int, error) {
+	return 0, errors.New("client disconnected before first write")
+}
+
+func (w *failingResponseWriter) Flush() {}
+
+var _ http.Flusher = (*failingResponseWriter)(nil)
