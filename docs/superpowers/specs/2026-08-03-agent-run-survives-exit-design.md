@@ -148,11 +148,11 @@ func (s *StudentRunService) publishDetachedRunEvents(ctx context.Context, runID 
 
 1. 鉴权、bind request。
 2. `prepared, err := runSvc.PrepareStreamRun(c.Request.Context(), user.ID, req)`；失败按现有 JSON 错误返回。
-3. 切换 SSE header，立即写 `:ok\n\n` 并 flush。
-4. `runSvc.StartPreparedStreamRun(prepared)`。如果 registry 已 active，仍继续观察该 run。
+3. 立即调用 `runSvc.StartPreparedStreamRun(prepared)`。如果 registry 已 active，仍继续观察该 run。
+4. 切换 SSE header，立即写 `:ok\n\n` 并 flush。
 5. 调用新的 `observeRunEvents(c, user.ID, prepared.RunID, after="")`，从 Redis Stream replay 全部窗口内事件，再跟 live。
 
-硬约束：`PrepareStreamRun` 一旦成功创建 DB run，controller 必须保证调用 `StartPreparedStreamRun`。即使 SSE header flush、broker subscribe 或 client connection 已经失败，也不能留下一个 `running` 但没有后台 runner 的预创建行。
+硬约束：`PrepareStreamRun` 一旦成功创建 DB run，controller 必须在任何可能失败的 SSE write/flush/subscribe 之前调用 `StartPreparedStreamRun`。即使 SSE header flush、broker subscribe 或 client connection 已经失败，也不能留下一个 `running` 但没有后台 runner 的预创建行。
 
 `AnswerStream` 新流程：
 

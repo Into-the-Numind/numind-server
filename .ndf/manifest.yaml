@@ -4,8 +4,8 @@ features:
   ndf_version: '3.0'
   description: Let user-facing Agent runs continue server-side after the browser refreshes, closes, or leaves the chat page, while preserving explicit cancel semantics and durable final results on return.
   classification_reason: 'Standard: changes Agent streaming lifecycle semantics across backend and possibly frontend, touches core biz/controller behavior, explicit cancel and billing finalization semantics, and more than three files.'
-  last_updated_by: ai-s3-plan
-  last_updated_at: '2026-08-03T19:14:05+0800'
+  last_updated_by: ai-s3-plan-review-fix
+  last_updated_at: '2026-08-03T19:24:53+0800'
   created_at: '2026-08-03T17:10:06+0800'
   track: standard
   stage: S3
@@ -13,7 +13,7 @@ features:
   repos: [numind-server, numind-web-v3]
   branches: {numind-server: feature/agent-run-survives-exit, numind-web-v3: feature/agent-run-survives-exit}
   worktrees: {numind-server: /private/tmp/wt-agent-run-survives-exit-numind-server, numind-web-v3: /private/tmp/wt-agent-run-survives-exit-numind-web-v3}
-  progress: {total_tasks: 10, completed_tasks: 0, reviewed_tasks: 0, current_task: 'S3 implementation plan recorded; independent atomicity review in progress'}
+  progress: {total_tasks: 10, completed_tasks: 0, reviewed_tasks: 0, current_task: 'S3 implementation plan recorded; second atomicity review P1 remediated; final atomicity recheck pending'}
   artifacts:
     requirement: requirements/agent-run-survives-exit.md
     proposal: proposals/agent-run-survives-exit-proposal.md
@@ -27,6 +27,7 @@ features:
   - 'S2 design defines supervised streaming with a process-local execution registry, detached event publisher, observer-only SSE handlers, frontend running-run reattach, unchanged API paths, and trace topology preserving existing agent-runtime-run generations.'
   - 'S3 plan splits implementation into 10 serial tasks: backend registry, prepare extraction, supervised publisher, answer resume, observer-only controller, cancel/observability, frontend snapshot restore, event reattach, auto-observer wiring, and verification.'
   - 'S3 first atomicity review found Task 2 too broad and missing runner-error-before-terminal coverage; plan was revised to split those concerns and add the best-effort error event branch.'
+  - 'S3 second atomicity review found the controller plan could write/flush SSE before starting a successfully precreated run; spec and plan were tightened so StartPreparedStreamRun happens before any possible SSE write/flush/subscribe failure.'
   blockers: []
 - id: rebind-vision-task-profiles
   ndf_version: '3.0'

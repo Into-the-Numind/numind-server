@@ -559,6 +559,7 @@ Add:
 
 ```go
 func TestCreateStream_ClientDisconnectDoesNotCancelSupervisedRun(t *testing.T) {}
+func TestCreateStream_ClientDisconnectBeforeFirstWriteStillStartsPreparedRun(t *testing.T) {}
 func TestCreateStream_StartsPreparedRunBeforeObserving(t *testing.T) {}
 func TestCreateStream_BrokerUnavailableEmitsObserverFallbackStart(t *testing.T) {}
 func TestAnswerStream_ValidationErrorReturnsJSONBeforeSSE(t *testing.T) {}
@@ -602,10 +603,12 @@ if err != nil {
 	core.WriteResponse(c, err, nil)
 	return
 }
-h.switchToSSE(c)
 h.runSvc.StartPreparedStreamRun(prepared)
+h.switchToSSE(c)
 h.observeRunEvents(c, user.ID, prepared.RunID, "")
 ```
+
+`StartPreparedStreamRun` must happen before `switchToSSE` writes or flushes the first byte. This closes the S2 hard constraint that a successfully pre-created run can never be left `running` without a background runner if the browser disconnects before the first SSE write.
 
 - [ ] **Step 6: Rewrite `AnswerStream`**
 
@@ -638,6 +641,7 @@ git commit -m "feat(agent): decouple stream observers from execution"
 
 - HTTP/SSE disconnect is observer-only.
 - Controller does not call runner with request-owned ctx.
+- A run created by `PrepareStreamRun` is started before any possible SSE write/flush failure.
 - Broker unavailable emits optional `observer_fallback` stream_start and closes cleanly.
 - S2 §6 API paths remain unchanged.
 - Answer validation errors are returned before switching to SSE.
