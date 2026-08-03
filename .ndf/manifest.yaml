@@ -4,23 +4,25 @@ features:
   ndf_version: '3.0'
   description: Rebind AI task profiles left on the retired qwen3-vl-flash service to the active qwen3.5-flash route.
   classification_reason: 'Hotfix: data-only system configuration repair, no DB schema, no new API endpoint, no new external integration, three repository files, and no payment or permission logic.'
-  last_updated_by: ai-h3-merging
-  last_updated_at: '2026-08-03T13:21:02+0800'
-  last_verified: '2026-08-03T13:21:02+0800'
+  last_updated_by: ai-h3-dev-deployed
+  last_updated_at: '2026-08-03T13:32:02+0800'
+  last_verified: '2026-08-03T13:32:02+0800'
   created_at: '2026-08-03T10:27:58+0800'
   track: hotfix
   stage: H3
   status: active
   repos: [numind-server]
-  branches: {numind-server: fix/rebind-vision-task-profiles}
-  worktrees: {numind-server: /private/tmp/wt-rebind-vision-task-profiles-numind-server}
-  progress: {total_tasks: 2, completed_tasks: 2, reviewed_tasks: 2, current_task: 'Merge to develop and deploy Dev; await human acceptance before Prod'}
+  branches: {numind-server: develop}
+  worktrees: {numind-server: /Users/zhiyuchen/Documents/10_跃迁有数/有数AI工作台/莫小派/Codes/numind-server}
+  progress: {total_tasks: 2, completed_tasks: 2, reviewed_tasks: 2, current_task: 'Dev deployment and read-only binding verification passed; awaiting explicit human authorization before Prod migration/deploy'}
+  deployed: 'dev server develop-58a5e6d6 (registry digest sha256:344edff363af0029cdeca580c8c74248021e8587d5d1714bcdbd1767df0601e5); healthz ok; salesrag.profile, salesrag.chatstyle, and sop.vision bind active qwen3.5-flash'
   decisions:
   - 'Prod logs confirmed HTTP 200 contains an SSE error: salesrag.profile resolves to retired qwen3-vl-flash and fails with AIService.ServiceNotFound.'
   - 'Repair every task_profile.default_service_id pointing to the retired service by stable model_key; do not hard-code environment-specific service IDs or task IDs.'
   - 'Prod remains read-only until a separate explicit migration authorization after Dev verification.'
   - 'H1: focused migration test, local MySQL 8.4 double-apply, go test ./..., and task lint all passed.'
   - 'H2 reviewer PASS: P0=0, P1=0; one non-blocking P2 notes the permanent Go regression test is a static SQL contract, with MySQL 8.4 positive and fail-closed negative execution verified in H2.'
+  - 'H3 Dev: merge commit 58a5e6d6 deployed healthy; read-only DB verification confirmed all three affected tasks already use active qwen3.5-flash and recent logs contain no ServiceNotFound.'
   blockers: []
 - id: agent-thinking-overflow
   ndf_version: '3.0'
