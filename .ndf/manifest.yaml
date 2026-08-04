@@ -1,5 +1,29 @@
 schema_version: '2.0'
 features:
+- id: xhs-video-info-v2-fallback
+  ndf_version: '3.0'
+  description: Add video_info_v2/videoInfoV2 video stream candidate extraction to the XHS collector extension so current Xiaohongshu video notes still capture direct video URLs.
+  classification_reason: 'Hotfix: frontend extension-only parser/bridge repair plus generated package, no DB schema, no new API endpoint, no new external integration, and no payment or permission logic.'
+  last_updated_by: ai-h3-merged
+  last_updated_at: '2026-08-04T15:38:30+0800'
+  last_verified: '2026-08-04T15:37:05+0800'
+  created_at: '2026-08-04T15:30:09+0800'
+  track: hotfix
+  stage: H3
+  status: active
+  repos: [numind-web-v3]
+  branches: {numind-web-v3: develop}
+  worktrees: {numind-web-v3: removed by ndf-done}
+  progress: {total_tasks: 2, completed_tasks: 2, reviewed_tasks: 0, current_task: 'Merged to numind-web-v3 develop at 4c2ae56 and pushed; Dev deployment and human quick acceptance pending'}
+  artifacts:
+    h1_h2_verification: .ndf/decisions/xhs-video-info-v2-fallback/0001-h1-h2-verification.md
+  decisions:
+  - 'Diagnosis found production and local collector zip hashes matched, ruling out package rollback.'
+  - 'Current Xiaohongshu video detail data exposes stream URLs under video_info_v2.media.stream h264/h265 master_url; the old collector only read note.video media stream containers.'
+  - 'Fix keeps existing candidate paths and adds video_info_v2/videoInfoV2/video_info/videoInfo/video_data/videoData containers plus screencast opaque1 stream keys.'
+  - 'H1/H2: first branch commit is a failing repro test; fix commit makes extension tests, package check, lint, and type-check pass.'
+  - 'H3: ndf-done merged fix/xhs-video-info-v2-fallback into numind-web-v3 develop at 4c2ae56 and pushed origin/develop.'
+  blockers: []
 - id: agent-run-survives-exit
   ndf_version: '3.0'
   description: Let user-facing Agent runs continue server-side after the browser refreshes, closes, or leaves the chat page, while preserving explicit cancel semantics and durable final results on return.
