@@ -26,3 +26,10 @@ Packaged collector zip SHA256 after fix: `e382bb6f5ad69df2d53722e6f014233ee4704f
 
 - `ndf-done` merged `fix/xhs-video-info-v2-fallback` into `numind-web-v3` develop at `4c2ae56`.
 - Worktree `/private/tmp/wt-xhs-video-info-v2-fallback-numind-web-v3` was removed and the local fix branch was deleted.
+
+## Dev Deployment
+
+- Deployed `numind-web-v3` develop `4c2ae56` to Dev as image `develop-4c2ae56`.
+- Registry digest: `sha256:d02310d65db2e9b93b8280ab50e851eb97d492ba515cd50c30ef9f94cde3aeca`.
+- Public Dev health check returned `healthy`.
+- Downloaded Dev collector zip SHA256: `e382bb6f5ad69df2d53722e6f014233ee4704f36a6630d630ed1357e7d1d8525`.
