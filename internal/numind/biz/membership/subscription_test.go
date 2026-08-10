@@ -176,6 +176,28 @@ func TestGrantWeekly_RejectsActiveMonthly(t *testing.T) {
 	assert.ErrorIs(t, err, errno.ErrInvalidParameter)
 }
 
+func TestGrantSub_RejectsActiveWeekly(t *testing.T) {
+	db := newTestDB(t)
+	svc := biz.NewMembershipService(db)
+
+	_, err := svc.GrantWeeklySubscription(t.Context(), newGrantWeeklyReq(1, 704, ts(2026, 7, 1)))
+	require.NoError(t, err)
+
+	_, err = svc.GrantOrRenewSubscription(t.Context(), newGrantSubReq(1, 704, 12, ts(2026, 7, 4)))
+	require.Error(t, err)
+	assert.ErrorIs(t, err, errno.ErrInvalidParameter)
+
+	var sub model.Subscription
+	require.NoError(t, db.Where("user_id = ?", uint64(704)).Take(&sub).Error)
+	assert.Equal(t, model.ProductTypeWeekly, sub.PlanType)
+	assert.Equal(t, model.WeeklyCycleCredits, sub.CycleCredits)
+	assert.Equal(t, ts(2026, 7, 8), sub.ExpiresAt)
+
+	var eventCount int64
+	require.NoError(t, db.Model(&model.MembershipEvent{}).Where("user_id = ?", uint64(704)).Count(&eventCount).Error)
+	assert.Equal(t, int64(1), eventCount)
+}
+
 // ────────────────────────────────────────────────────────────
 // TestGrantSub_RenewAnchorPreserved — 1/31 + 3 mo = 4/30, then +1 mo = 5/31
 // ────────────────────────────────────────────────────────────
