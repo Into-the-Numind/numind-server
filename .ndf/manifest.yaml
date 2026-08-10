@@ -4,21 +4,22 @@ features:
   ndf_version: '3.0'
   description: 'Prevent annual/monthly membership grants from inheriting a prior weekly plan and its 500-credit cycle configuration.'
   classification_reason: 'Standard: no schema/API/external-service changes, but membership and credit billing are high-risk business logic.'
-  last_updated_by: ai-s3
-  last_updated_at: '2026-08-10T19:16:00+0800'
+  last_updated_by: ai-s5
+  last_updated_at: '2026-08-10T19:44:00+0800'
   created_at: '2026-08-10T19:13:40+0800'
   track: standard
-  stage: S3
+  stage: S5
   status: active
   repos: [numind-server]
   branches: {numind-server: feature/membership-weekly-annual-conversion}
   worktrees: {numind-server: /private/tmp/wt-membership-weekly-annual-conversion-numind-server}
-  progress: {total_tasks: 2, completed_tasks: 0, reviewed_tasks: 0, current_task: 'Task 1: customer regression test'}
+  progress: {total_tasks: 2, completed_tasks: 2, reviewed_tasks: 2, current_task: 'S6 merge and production deployment'}
   artifacts:
     requirement: requirements/membership-weekly-annual-conversion.md
     proposal: proposals/membership-weekly-annual-conversion-proposal.md
     spec: docs/superpowers/specs/2026-08-10-membership-weekly-annual-conversion-design.md
     plan: docs/superpowers/plans/2026-08-10-membership-weekly-annual-conversion.md
+    qa: docs/superpowers/qa/2026-08-10-membership-weekly-annual-conversion-s5.md
   decisions:
   - 'User approved immediate repair on 2026-08-10 after the root cause and production data-calibration scope were presented.'
   - 'Preserve existing product rule: active different paid plans are not stacked; reject active weekly to monthly/annual grants rather than inventing proration.'
