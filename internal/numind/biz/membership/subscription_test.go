@@ -104,6 +104,8 @@ func TestGrantSub_New(t *testing.T) {
 	assert.Equal(t, now, sub.CurrentStartedAt)
 	assert.Equal(t, ts(2026, 4, 15), sub.ExpiresAt)
 	assert.Equal(t, 3, sub.TotalMonthsPurchased)
+	assert.Equal(t, model.ProductTypeMonthly, sub.PlanType)
+	assert.Equal(t, model.MonthlyCycleCredits, sub.CycleCredits)
 
 	// Verify event row.
 	var evt model.MembershipEvent
@@ -250,6 +252,11 @@ func TestGrantSub_RenewAnchorPreserved(t *testing.T) {
 	var evt model.MembershipEvent
 	require.NoError(t, db.Where("user_id = ? AND event_type = ?", uint64(101), model.EventTypeSubRenewed).Take(&evt).Error)
 	assert.Equal(t, uint8(1), *evt.Months)
+
+	var sub model.Subscription
+	require.NoError(t, db.Where("user_id = ?", uint64(101)).Take(&sub).Error)
+	assert.Equal(t, model.ProductTypeMonthly, sub.PlanType)
+	assert.Equal(t, model.MonthlyCycleCredits, sub.CycleCredits)
 }
 
 // ────────────────────────────────────────────────────────────
