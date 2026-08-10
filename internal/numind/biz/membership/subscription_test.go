@@ -198,6 +198,26 @@ func TestGrantSub_RejectsActiveWeekly(t *testing.T) {
 	assert.Equal(t, int64(1), eventCount)
 }
 
+func TestGrantSub_ReopenExpiredWeeklyAsMonthly(t *testing.T) {
+	db := newTestDB(t)
+	svc := biz.NewMembershipService(db)
+
+	_, err := svc.GrantWeeklySubscription(t.Context(), newGrantWeeklyReq(1, 705, ts(2026, 7, 1)))
+	require.NoError(t, err)
+
+	res, err := svc.GrantOrRenewSubscription(t.Context(), newGrantSubReq(1, 705, 12, ts(2026, 7, 8)))
+	require.NoError(t, err)
+	assert.Equal(t, "reopen", res.Scenario)
+	assert.Equal(t, ts(2026, 7, 8), res.CurrentStartedAt)
+	assert.Equal(t, ts(2027, 7, 8), res.ExpiresAt)
+
+	var sub model.Subscription
+	require.NoError(t, db.Where("user_id = ?", uint64(705)).Take(&sub).Error)
+	assert.Equal(t, model.ProductTypeMonthly, sub.PlanType)
+	assert.Equal(t, model.MonthlyCycleCredits, sub.CycleCredits)
+	assert.Equal(t, 12, sub.TotalMonthsPurchased)
+}
+
 // ────────────────────────────────────────────────────────────
 // TestGrantSub_RenewAnchorPreserved — 1/31 + 3 mo = 4/30, then +1 mo = 5/31
 // ────────────────────────────────────────────────────────────
