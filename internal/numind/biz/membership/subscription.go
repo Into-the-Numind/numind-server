@@ -118,6 +118,12 @@ func (s *MembershipService) GrantOrRenewSubscription(ctx context.Context, req Gr
 		if err != nil {
 			return err
 		}
+		// Paid plans must not be mixed on one subscription row. The weekly grant
+		// path already rejects an active monthly subscription; enforce the
+		// symmetric rule here before any subscription or audit write.
+		if sub != nil && sub.ExpiresAt.After(now) && subscriptionPlanType(sub) == model.ProductTypeWeekly {
+			return errno.ErrInvalidParameter
+		}
 
 		// Determine scenario.
 		var scenario string
@@ -151,6 +157,8 @@ func (s *MembershipService) GrantOrRenewSubscription(ctx context.Context, req Gr
 				CurrentStartedAt:     now,
 				ExpiresAt:            expiresAt,
 				TotalMonthsPurchased: months,
+				PlanType:             model.ProductTypeMonthly,
+				CycleCredits:         model.MonthlyCycleCredits,
 				Source:               model.SourceB2BGrant,
 				GranterUserID:        req.GranterUserID,
 				CreatedAt:            now,
@@ -168,6 +176,8 @@ func (s *MembershipService) GrantOrRenewSubscription(ctx context.Context, req Gr
 
 		case "renew":
 			sub.TotalMonthsPurchased += months
+			sub.PlanType = model.ProductTypeMonthly
+			sub.CycleCredits = model.MonthlyCycleCredits
 			// INV-4: anchor on current_started_at (unchanged), add new total.
 			sub.ExpiresAt = util.AnchorAddMonths(sub.CurrentStartedAt, sub.TotalMonthsPurchased)
 			sub.UpdatedAt = now
@@ -184,6 +194,8 @@ func (s *MembershipService) GrantOrRenewSubscription(ctx context.Context, req Gr
 			sub.CurrentStartedAt = now
 			sub.TotalMonthsPurchased = months
 			sub.ExpiresAt = util.AnchorAddMonths(now, months)
+			sub.PlanType = model.ProductTypeMonthly
+			sub.CycleCredits = model.MonthlyCycleCredits
 			sub.Source = model.SourceB2BGrant
 			sub.GranterUserID = req.GranterUserID
 			sub.UpdatedAt = now
