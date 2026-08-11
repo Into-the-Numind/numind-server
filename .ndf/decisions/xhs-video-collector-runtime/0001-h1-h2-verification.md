@@ -29,3 +29,15 @@ Date: 2026-08-11T11:46:24+0800
 ## Scope
 
 - No `src/` UI file changed, so browser UI QA is not applicable. The extension parser test exercises the exact stream shape from the supplied production note.
+
+## H3 Production Release
+
+- `ndf-done` merged the hotfix into `numind-web-v3` develop at `c58c964` and removed the worktree/feature branch.
+- Tagged and deployed `v1.0.44`; production image: `ccr.ccs.tencentyun.com/youshunumind/numind-web-v3:v1.0.44-c58c964`.
+- Registry digest: `sha256:dd7ed71c4d7b5df1e36e7cb5a85dff6a7ddedef00b95b293aa5dff4632829dc7`.
+- Public `https://youshu.asia/health` returned `healthy`.
+- Downloaded production collector ZIP SHA-256: `7045c661c6078b1ec41de8242d0010d13f36346a9bb9edd1188a02fe46ac8d41`, matching the released package. Its manifest is version `1.0.1` and contains the dynamic-stream and image-rejection parser code.
+
+## Non-XHS Baseline Test
+
+- `tests/unit/integration/SettingsView.spec.ts` has one failing assertion when run in isolation (`credits` expected, `free` received). The same failure reproduces on the pre-hotfix `develop` baseline and no relevant file changed in this repair, so it is tracked separately rather than modifying unrelated membership UI behavior during this incident response.

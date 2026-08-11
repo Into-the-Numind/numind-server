@@ -4,17 +4,19 @@ features:
   ndf_version: '3.0'
   description: 'Capture Xiaohongshu video URLs when the current page runtime groups streams under opaque keys such as EF4 and EF5.'
   classification_reason: 'Hotfix: extension parser and packaged download only; no schema, API, external integration, payment, or permission change.'
-  last_updated_by: ai-h2-automated-verification
-  last_updated_at: '2026-08-11T11:54:12+0800'
-  last_verified: '2026-08-11T11:54:12+0800'
+  last_updated_by: ai-h3-prod-deployed
+  last_updated_at: '2026-08-11T12:04:36+0800'
+  last_verified: '2026-08-11T12:04:36+0800'
   created_at: '2026-08-10T20:54:10+0800'
   track: hotfix
-  stage: H2
-  status: active
+  stage: completed
+  status: completed
+  completed_at: '2026-08-11T12:04:36+0800'
   repos: [numind-web-v3]
-  branches: {numind-web-v3: fix/xhs-video-collector-runtime}
-  worktrees: {numind-web-v3: /private/tmp/wt-xhs-video-collector-runtime-numind-web-v3}
-  progress: {total_tasks: 2, completed_tasks: 2, reviewed_tasks: 2, current_task: 'H2 full unit, extension, package, lint, and type verification passed; awaiting final review and H3 release.'}
+  branches: {numind-web-v3: develop}
+  worktrees: {numind-web-v3: removed by ndf-done}
+  progress: {total_tasks: 2, completed_tasks: 2, reviewed_tasks: 2, current_task: 'Production v1.0.44-c58c964 deployed healthy; public collector ZIP verified.'}
+  deployed: 'prod web v1.0.44-c58c964 (registry digest sha256:dd7ed71c4d7b5df1e36e7cb5a85dff6a7ddedef00b95b293aa5dff4632829dc7); public /health healthy; collector ZIP SHA256 7045c661c6078b1ec41de8242d0010d13f36346a9bb9edd1188a02fe46ac8d41'
   artifacts:
     h1_h2_verification: .ndf/decisions/xhs-video-collector-runtime/0001-h1-h2-verification.md
   decisions:
@@ -22,6 +24,9 @@ features:
   - 'Both the isolated parser and MAIN-world bridge now preserve named-codec priority, then inspect all other stream groups for a video URL; image URLs are rejected and an item backup MP4 remains eligible.'
   - 'HTML-text and final-payload fallback paths use the same video-resource predicate, so a jpg/webp URL cannot populate video_url when runtime state is unavailable.'
   - 'The default unit-test command now includes the extension suite to prevent test discovery from excluding this regression.'
+  - 'H3: ndf-done merged the hotfix into numind-web-v3 develop at c58c964 and deleted the worktree/feature branch.'
+  - 'H3: tagged v1.0.44 and deployed the production image. Public health and download-package verification passed.'
+  - 'An isolated SettingsView integration test fails identically on the pre-hotfix develop baseline; it is unrelated to the XHS files and was not changed in this incident repair.'
   - 'The extension manifest is bumped to 1.0.1 and the public collector ZIP is regenerated from the updated source.'
   blockers: []
 - id: membership-weekly-annual-conversion
