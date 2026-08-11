@@ -1,5 +1,29 @@
 schema_version: '2.0'
 features:
+- id: xhs-video-collector-runtime
+  ndf_version: '3.0'
+  description: 'Capture Xiaohongshu video URLs when the current page runtime groups streams under opaque keys such as EF4 and EF5.'
+  classification_reason: 'Hotfix: extension parser and packaged download only; no schema, API, external integration, payment, or permission change.'
+  last_updated_by: ai-h2-automated-verification
+  last_updated_at: '2026-08-11T11:54:12+0800'
+  last_verified: '2026-08-11T11:54:12+0800'
+  created_at: '2026-08-10T20:54:10+0800'
+  track: hotfix
+  stage: H2
+  status: active
+  repos: [numind-web-v3]
+  branches: {numind-web-v3: fix/xhs-video-collector-runtime}
+  worktrees: {numind-web-v3: /private/tmp/wt-xhs-video-collector-runtime-numind-web-v3}
+  progress: {total_tasks: 2, completed_tasks: 2, reviewed_tasks: 2, current_task: 'H2 full unit, extension, package, lint, and type verification passed; awaiting final review and H3 release.'}
+  artifacts:
+    h1_h2_verification: .ndf/decisions/xhs-video-collector-runtime/0001-h1-h2-verification.md
+  decisions:
+  - 'The supplied note 6a7993e60000000028032339 exposes MP4 stream records in note.video.media.stream.EF4/EF5 while the previous parser only checked named codec keys.'
+  - 'Both the isolated parser and MAIN-world bridge now preserve named-codec priority, then inspect all other stream groups for a video URL; image URLs are rejected and an item backup MP4 remains eligible.'
+  - 'HTML-text and final-payload fallback paths use the same video-resource predicate, so a jpg/webp URL cannot populate video_url when runtime state is unavailable.'
+  - 'The default unit-test command now includes the extension suite to prevent test discovery from excluding this regression.'
+  - 'The extension manifest is bumped to 1.0.1 and the public collector ZIP is regenerated from the updated source.'
+  blockers: []
 - id: membership-weekly-annual-conversion
   ndf_version: '3.0'
   description: 'Prevent annual/monthly membership grants from inheriting a prior weekly plan and its 500-credit cycle configuration.'
