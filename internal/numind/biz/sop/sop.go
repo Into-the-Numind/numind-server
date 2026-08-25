@@ -787,13 +787,8 @@ func (b *sopBiz) ExecuteNodeStream(ctx context.Context, runID, nodeID uint, text
 			return fmt.Errorf("failed to update node run: %w", err)
 		}
 
-		// 联动清理（解决“时空推演矛盾”）：既然中间节点重做了，后续的所有步骤、笔记和对话都已经失效，必须清除以防冲突。
-		// 三个删除包进单个事务（要么全成、要么全不动）：原子清理失败 = 可能残留过时下游数据，
-		// 中止再生而非在脏时间线上继续（问题 5）。
-		log.C(ctx).Infow("Regeneration triggered, cleaning up downstream records", "run_id", runID, "after_sort", node.Sort)
-		if err := b.ds.Sop().CleanupDownstreamForRegeneration(runID, node.Sort); err != nil {
-			return fmt.Errorf("failed to clean up downstream records for regeneration: %w", err)
-		}
+		// 后续步骤的执行结果、收藏、笔记和对话是用户已保存的数据。
+		// 重新生成当前步骤只重置当前记录，不联动删除任何后续数据。
 
 		// 重新加载nodeRun以获取最新数据
 		nodeRun, err = b.ds.Sop().GetNodeRun(nodeRun.ID)

@@ -1,5 +1,24 @@
 schema_version: '2.0'
 features:
+- id: bookmark-preserve-downstream
+  ndf_version: '3.0'
+  description: Preserve downstream SOP bookmarks, execution records, notes, and chat messages when an earlier step is unbookmarked or regenerated.
+  classification_reason: 'Hotfix: backend-only behavior correction in one business-logic file plus regression tests; no schema, API, external integration, payment, or permission change.'
+  last_updated_by: ai-h1
+  last_updated_at: '2026-08-25T13:07:45+0800'
+  created_at: '2026-08-25T13:04:22+0800'
+  track: hotfix
+  stage: H1
+  status: active
+  repos: [numind-server]
+  branches: {numind-server: fix/bookmark-preserve-downstream}
+  worktrees: {numind-server: /private/tmp/wt-bookmark-preserve-downstream-numind-server}
+  progress: {total_tasks: 2, completed_tasks: 1, reviewed_tasks: 0, current_task: 'Minimal fix passes the focused regeneration and unbookmark regression tests; full H1 verification is running.'}
+  decisions:
+  - 'Customer requirement: unbookmarking or regenerating an earlier step must not delete or alter any downstream bookmark or saved record.'
+  - 'DeleteBookmark already removes only the selected bookmark; the destructive behavior came from ExecuteNodeStream calling CleanupDownstreamForRegeneration after resetting the current step.'
+  - 'The minimal fix keeps current-step reset and current-step bookmark invalidation semantics, but stops regeneration from invoking downstream cleanup.'
+  blockers: []
 - id: xhs-video-collector-runtime
   ndf_version: '3.0'
   description: 'Capture Xiaohongshu video URLs when the current page runtime groups streams under opaque keys such as EF4 and EF5.'
