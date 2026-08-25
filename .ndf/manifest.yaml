@@ -4,20 +4,25 @@ features:
   ndf_version: '3.0'
   description: Preserve downstream SOP bookmarks, execution records, notes, and chat messages when an earlier step is unbookmarked or regenerated.
   classification_reason: 'Hotfix: backend-only behavior correction in one business-logic file plus regression tests; no schema, API, external integration, payment, or permission change.'
-  last_updated_by: ai-h1
-  last_updated_at: '2026-08-25T13:07:45+0800'
+  last_updated_by: ai-h2-reviewed
+  last_updated_at: '2026-08-25T13:11:05+0800'
+  last_verified: '2026-08-25T13:11:05+0800'
   created_at: '2026-08-25T13:04:22+0800'
   track: hotfix
-  stage: H1
+  stage: H2
   status: active
   repos: [numind-server]
   branches: {numind-server: fix/bookmark-preserve-downstream}
   worktrees: {numind-server: /private/tmp/wt-bookmark-preserve-downstream-numind-server}
-  progress: {total_tasks: 2, completed_tasks: 1, reviewed_tasks: 0, current_task: 'Minimal fix passes the focused regeneration and unbookmark regression tests; full H1 verification is running.'}
+  progress: {total_tasks: 2, completed_tasks: 2, reviewed_tasks: 2, current_task: 'H1/H2 complete: focused SOP tests and lint pass; full suite has one unrelated Feishu baseline failure reproduced on develop. Ready for H3 merge and Dev deployment.'}
+  artifacts:
+    h1_h2_verification: .ndf/decisions/bookmark-preserve-downstream/0001-h1-h2-verification.md
   decisions:
   - 'Customer requirement: unbookmarking or regenerating an earlier step must not delete or alter any downstream bookmark or saved record.'
   - 'DeleteBookmark already removes only the selected bookmark; the destructive behavior came from ExecuteNodeStream calling CleanupDownstreamForRegeneration after resetting the current step.'
   - 'The minimal fix keeps current-step reset and current-step bookmark invalidation semantics, but stops regeneration from invoking downstream cleanup.'
+  - 'H2 review passed with no schema, API, permission, payment, AI gateway, or Langfuse changes.'
+  - 'Full go test has one unrelated Feishu timeout-classification failure that reproduces unchanged on develop; all SOP and affected-scope tests pass.'
   blockers: []
 - id: xhs-video-collector-runtime
   ndf_version: '3.0'
