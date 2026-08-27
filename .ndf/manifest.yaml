@@ -1,5 +1,25 @@
 schema_version: '2.0'
 features:
+- id: session-history-initial-scroll
+  ndf_version: '3.0'
+  description: 'Prevent initial Agent history restoration from being mistaken for an upward scroll and auto-loading older pages.'
+  classification_reason: 'Same-scope Hotfix follow-up: frontend-only scroll sequencing in one component plus one browser regression test; no schema, API, external integration, payment, or permission change.'
+  last_updated_by: ai-h2-verified
+  last_updated_at: '2026-08-27T12:42:26+0800'
+  last_verified: '2026-08-27T12:42:26+0800'
+  created_at: '2026-08-27T12:35:46+0800'
+  track: hotfix
+  stage: H2
+  status: active
+  repos: [numind-web-v3]
+  branches: {numind-web-v3: fix/session-history-initial-scroll}
+  worktrees: {numind-web-v3: /private/tmp/wt-session-history-initial-scroll-numind-web-v3}
+  progress: {total_tasks: 2, completed_tasks: 2, reviewed_tasks: 2, current_task: 'H2 automatic verification passed; ready for ndf-done and Dev frontend deployment.'}
+  artifacts:
+    h1_h2_verification: .ndf/decisions/session-history-initial-scroll/0001-h1-h2-verification.md
+  decisions:
+  - 'Initial restoration is an immediate jump to the newest edge; only a later return to the top threshold may request older history.'
+  - 'The first branch commit is the failing customer regression test; the implementation is a separate second commit.'
 - id: session-history-pagination
   ndf_version: '3.0'
   description: 'Load Agent session history in 100-run pages without sorting large message JSON, then fetch older pages when the user scrolls upward.'
