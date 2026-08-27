@@ -38,3 +38,12 @@ Date: 2026-08-27
 ## Scope boundary
 
 This Hotfix repairs only conversation snapshot loading and older-history pagination. It does not change Feishu write behavior, model-provider handling, billing, permissions, database schema, or production configuration.
+
+## H3 merge and Dev deployment
+
+- `ndf-done` merged and pushed backend develop at `5d1db3b5` and frontend develop at `8d295c5`.
+- Both feature worktrees and local feature branches were removed successfully.
+- The backend Dev image compiled and passed its in-image binary checks.
+- TCR rejected the image push because `youshunumind/numind-server` has reached the personal-edition limit of 100 tags.
+- The registry contains 66 rebuildable `develop-<sha>` tags, but the configured registry credentials do not have tag-delete authority. A delete-token request and a single exact-tag probe were denied; no tags were deleted.
+- No Dev container was replaced. The frontend was intentionally not deployed alone, avoiding a mismatched Dev pair.
