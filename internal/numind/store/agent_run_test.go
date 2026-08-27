@@ -240,6 +240,60 @@ func TestAgentRunStore_ListBySession(t *testing.T) {
 	assert.Len(t, runs, 5)
 }
 
+// Customer regression: sorting complete agent_run rows also sorts the large
+// messages JSON column in MySQL. A single 285 KB transcript exhausted the
+// production sort buffer and made the whole session page fail to load. The
+// ordered/limited query must therefore select lightweight IDs only; complete
+// rows are hydrated afterwards without truncating their messages.
+func TestAgentRunStore_ListBySession_SortsIDsBeforeHydratingLargeMessages(t *testing.T) {
+	s := newTestAgentRunStore(t)
+	concrete, ok := s.(*agentRunStore)
+	require.True(t, ok)
+
+	var statements []string
+	callbackName := "test:capture-list-by-session-sql"
+	require.NoError(t, concrete.db.Callback().Query().After("gorm:query").Register(callbackName, func(tx *gorm.DB) {
+		if sql := tx.Statement.SQL.String(); sql != "" {
+			statements = append(statements, sql)
+		}
+	}))
+	t.Cleanup(func() { concrete.db.Callback().Query().Remove(callbackName) })
+
+	ctx := context.Background()
+	largeContent := strings.Repeat("完整聊天内容-", 30_000)
+	messages, err := json.Marshal([]map[string]string{{"role": "assistant", "content": largeContent}})
+	require.NoError(t, err)
+	for i := 0; i < 3; i++ {
+		run := &model.AgentRun{
+			UserID:    355,
+			SessionID: "production-large-session",
+			Status:    "terminated",
+			Messages:  datatypes.JSON(messages),
+			StartedAt: time.Now().Add(time.Duration(i) * time.Second),
+		}
+		require.NoError(t, s.Create(ctx, run))
+	}
+
+	runs, total, err := s.ListBySession(ctx, "production-large-session", 0, 2)
+	require.NoError(t, err)
+	require.Equal(t, int64(3), total)
+	require.Len(t, runs, 2)
+	assert.Equal(t, string(messages), string(runs[0].Messages), "hydration must keep the complete transcript")
+
+	var orderedSQL string
+	for _, statement := range statements {
+		normalized := strings.ToLower(statement)
+		if strings.Contains(normalized, "order by started_at desc") ||
+			strings.Contains(normalized, "order by `started_at` desc") {
+			orderedSQL = normalized
+			break
+		}
+	}
+	require.NotEmpty(t, orderedSQL, "expected to capture the ordered page query")
+	assert.NotContains(t, orderedSQL, "select *", "the sort query must not carry the large messages column")
+	assert.Regexp(t, `select\s+[\x60\"]?id[\x60\"]?\s+from`, orderedSQL, "the sort query should select IDs only")
+}
+
 func TestAgentRunStore_ListByUserDoesNotReturnFullMessages(t *testing.T) {
 	s := newTestAgentRunStore(t)
 	ctx := context.Background()
