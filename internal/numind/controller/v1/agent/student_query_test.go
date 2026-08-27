@@ -181,6 +181,51 @@ func TestStudentQueryCtrl_GetSessionSnapshot_Forbidden(t *testing.T) {
 	assert.Equal(t, http.StatusForbidden, w.Code)
 }
 
+func TestStudentQueryCtrl_GetSessionSnapshot_ReturnsRequestedOlderRunPage(t *testing.T) {
+	db := newCtrlTestDB(t)
+	user := &model.User{}
+	user.ID = 42
+	r := setupRouter(t, db, user)
+
+	startedAt := time.Date(2026, 8, 24, 8, 0, 0, 0, time.UTC)
+	for i := 0; i < 101; i++ {
+		messages, err := json.Marshal([]map[string]string{{
+			"role":    "user",
+			"content": fmt.Sprintf("history-run-%03d", i),
+		}})
+		require.NoError(t, err)
+		require.NoError(t, db.Create(&model.AgentRun{
+			UserID:    user.ID,
+			SessionID: "paged-session",
+			Status:    "completed",
+			Messages:  messages,
+			StartedAt: startedAt.Add(time.Duration(i) * time.Second),
+		}).Error)
+	}
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/sessions/paged-session/snapshot?offset=100&limit=100", nil)
+	r.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var resp struct {
+		Data struct {
+			Messages   []map[string]interface{} `json:"messages"`
+			Offset     int                      `json:"offset"`
+			NextOffset int                      `json:"next_offset"`
+			HasMore    bool                     `json:"has_more"`
+			TotalRuns  int64                    `json:"total_runs"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Equal(t, 100, resp.Data.Offset)
+	assert.Equal(t, 101, resp.Data.NextOffset)
+	assert.False(t, resp.Data.HasMore)
+	assert.Equal(t, int64(101), resp.Data.TotalRuns)
+	require.Len(t, resp.Data.Messages, 1)
+	assert.Equal(t, "history-run-000", resp.Data.Messages[0]["text"])
+}
+
 // ---------------------------------------------------------------------------
 // GET /tenant-settings/support-contact
 // ---------------------------------------------------------------------------
