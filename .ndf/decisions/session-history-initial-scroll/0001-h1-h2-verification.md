@@ -16,3 +16,12 @@ The browser initially renders a scroll container at `scrollTop=0`; smooth initia
 - `npm run type-check`: exit 0.
 - `npm run test:unit`: 1,190 application tests plus 40 extension tests passed; existing skips/todos unchanged.
 - `npm run build`: exit 0; only existing chunk-size warnings.
+
+## H3 Dev verification
+
+- Merged frontend develop commit: `1848f9b`.
+- Deployed image: `develop-1848f9b`, registry digest `sha256:842475d8ca7f1fe5cfde9f5d2aa8d78ef87432fc1a4bdb70d30e76ec1771609d`.
+- Dev container and external `/health` endpoint are healthy.
+- Before any user scroll, the authenticated 150-run fixture makes only the default snapshot request, renders exactly Run 051-150, and sits at `distanceFromBottom=0` with Run 149-150 visible.
+- On upward scroll, it requests `offset=100&limit=100`, renders Run 001-150, and retains Run 051 with `0px` anchor drift.
+- Browser console errors: none.
