@@ -144,7 +144,20 @@ func (h *StudentQueryController) GetSessionSnapshot(c *gin.Context) {
 		core.WriteResponse(c, errno.ErrBind.SetMessage("invalid session id: %q", sessionID), nil)
 		return
 	}
-	snap, err := h.querySvc.GetSessionSnapshot(c.Request.Context(), user.ID, sessionID)
+	offset, err := strconv.Atoi(c.DefaultQuery("offset", "0"))
+	if err != nil || offset < 0 {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("invalid offset"), nil)
+		return
+	}
+	limit, err := strconv.Atoi(c.DefaultQuery("limit", "100"))
+	if err != nil || limit <= 0 {
+		core.WriteResponse(c, errno.ErrBind.SetMessage("invalid limit"), nil)
+		return
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	snap, err := h.querySvc.GetSessionSnapshotPage(c.Request.Context(), user.ID, sessionID, offset, limit)
 	if err != nil {
 		core.WriteResponse(c, err, nil)
 		return

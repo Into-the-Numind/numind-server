@@ -173,9 +173,13 @@ func truncateRunes(s string, n int) string {
 // V1.5 compact-dead-schema-cleanup — CompactSummary 字段（legacy V1）已删；
 // 前端 resume flow 不再依赖此字段（之前永远是空串）。
 type SessionSnapshot struct {
-	SessionID string      `json:"session_id"`
-	Run       RunSummary  `json:"run"`
-	Messages  interface{} `json:"messages"` // frontend-shaped AgentMessage array
+	SessionID  string      `json:"session_id"`
+	Run        RunSummary  `json:"run"`
+	Messages   interface{} `json:"messages"` // frontend-shaped AgentMessage array
+	Offset     int         `json:"offset"`
+	NextOffset int         `json:"next_offset"`
+	HasMore    bool        `json:"has_more"`
+	TotalRuns  int64       `json:"total_runs"`
 }
 
 // StudentQueryService handles the student-facing read + session-management endpoints.
@@ -262,18 +266,34 @@ func (s *StudentQueryService) ListAllHistorySessions(ctx context.Context, userID
 	return s.toEnrichedSummaries(ctx, runs)
 }
 
-// GetSessionSnapshot returns all messages across all runs in the session
+const sessionSnapshotPageSize = 100
+
+// GetSessionSnapshot returns the newest page of messages in the session
 // (ordered chronologically) for the learner-facing resume flow.
 //
 // Lookup is by agent_run.session_id (UUID string), NOT agent_run.id.
-// Fetches up to 100 runs to reconstruct full multi-turn chat history.
+// Fetches the newest 100 runs. Older pages are available through
+// GetSessionSnapshotPage and are prepended by the frontend on upward scroll.
 //
 // Returns errno.ErrAgentRunNotFound if no runs match the session_id, and
 // errno.ErrForbidden if the session belongs to a different user.
 func (s *StudentQueryService) GetSessionSnapshot(ctx context.Context, userID uint, sessionID string) (*SessionSnapshot, error) {
-	runs, _, err := s.runStore.ListBySession(ctx, sessionID, 0, 100)
+	return s.GetSessionSnapshotPage(ctx, userID, sessionID, 0, sessionSnapshotPageSize)
+}
+
+// GetSessionSnapshotPage returns one run page. ListBySession yields runs newest
+// first; this method reverses only the selected page so its messages remain
+// chronological before the frontend prepends older pages.
+func (s *StudentQueryService) GetSessionSnapshotPage(ctx context.Context, userID uint, sessionID string, offset, limit int) (*SessionSnapshot, error) {
+	if offset < 0 {
+		offset = 0
+	}
+	if limit <= 0 || limit > sessionSnapshotPageSize {
+		limit = sessionSnapshotPageSize
+	}
+	runs, total, err := s.runStore.ListBySession(ctx, sessionID, offset, limit)
 	if err != nil {
-		return nil, fmt.Errorf("StudentQueryService.GetSessionSnapshot list: %w", err)
+		return nil, fmt.Errorf("StudentQueryService.GetSessionSnapshotPage list: %w", err)
 	}
 	if len(runs) == 0 {
 		return nil, errno.ErrAgentRunNotFound
@@ -281,6 +301,16 @@ func (s *StudentQueryService) GetSessionSnapshot(ctx context.Context, userID uin
 
 	// Use the newest run to represent the session's current status and metadata
 	latestRun := &runs[0]
+	if offset > 0 {
+		latestRuns, _, latestErr := s.runStore.ListBySession(ctx, sessionID, 0, 1)
+		if latestErr != nil {
+			return nil, fmt.Errorf("StudentQueryService.GetSessionSnapshotPage latest: %w", latestErr)
+		}
+		if len(latestRuns) == 0 {
+			return nil, errno.ErrAgentRunNotFound
+		}
+		latestRun = &latestRuns[0]
+	}
 	if latestRun.UserID != userID {
 		return nil, errno.ErrForbidden.SetMessage("access to another user's session is not allowed")
 	}
@@ -292,8 +322,12 @@ func (s *StudentQueryService) GetSessionSnapshot(ctx context.Context, userID uin
 	runSummary := *summaries[0]
 
 	snap := &SessionSnapshot{
-		SessionID: sessionID,
-		Run:       runSummary,
+		SessionID:  sessionID,
+		Run:        runSummary,
+		Offset:     offset,
+		NextOffset: offset + len(runs),
+		HasMore:    offset+len(runs) < int(total),
+		TotalRuns:  total,
 	}
 
 	// Concatenate all messages chronologically (ListBySession yields DESC, so process in reverse)

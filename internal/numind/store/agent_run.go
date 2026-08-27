@@ -1376,15 +1376,42 @@ func (s *agentRunStore) AnswerAndClear(ctx context.Context, id uint64, turn json
 
 func (s *agentRunStore) ListBySession(ctx context.Context, sessionID string, offset, limit int) ([]model.AgentRun, int64, error) {
 	var (
-		runs  []model.AgentRun
-		total int64
+		runIDs []uint64
+		runs   []model.AgentRun
+		total  int64
 	)
 	base := s.db.WithContext(ctx).Model(&model.AgentRun{}).Where("session_id = ?", sessionID)
 	if err := base.Count(&total).Error; err != nil {
 		return nil, 0, fmt.Errorf("agentRunStore.ListBySession.Count: %w", err)
 	}
-	if err := base.Offset(offset).Limit(limit).Order("started_at DESC").Find(&runs).Error; err != nil {
-		return nil, 0, fmt.Errorf("agentRunStore.ListBySession.Find: %w", err)
+
+	// Sort and limit only the fixed-width primary key. Sorting SELECT * made
+	// MySQL carry the potentially very large messages JSON through filesort and
+	// exhausted the production sort buffer. The second query hydrates complete
+	// rows after the page has already been chosen, so no transcript is truncated.
+	if err := base.Select("id").
+		Offset(offset).
+		Limit(limit).
+		Order("started_at DESC, id DESC").
+		Pluck("id", &runIDs).Error; err != nil {
+		return nil, 0, fmt.Errorf("agentRunStore.ListBySession.PageIDs: %w", err)
+	}
+	if len(runIDs) == 0 {
+		return []model.AgentRun{}, total, nil
+	}
+
+	var hydrated []model.AgentRun
+	if err := s.db.WithContext(ctx).Where("id IN ?", runIDs).Find(&hydrated).Error; err != nil {
+		return nil, 0, fmt.Errorf("agentRunStore.ListBySession.Hydrate: %w", err)
+	}
+	byID := make(map[uint64]model.AgentRun, len(hydrated))
+	for i := range hydrated {
+		byID[hydrated[i].ID] = hydrated[i]
+	}
+	for _, id := range runIDs {
+		if run, ok := byID[id]; ok {
+			runs = append(runs, run)
+		}
 	}
 	return runs, total, nil
 }

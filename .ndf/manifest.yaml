@@ -1,5 +1,31 @@
 schema_version: '2.0'
 features:
+- id: session-history-pagination
+  ndf_version: '3.0'
+  description: 'Load Agent session history in 100-run pages without sorting large message JSON, then fetch older pages when the user scrolls upward.'
+  classification_reason: 'User-approved Hotfix override: extends the existing snapshot endpoint only; no schema, new endpoint, external integration, payment, or permission change.'
+  last_updated_by: ai-h2-verified
+  last_updated_at: '2026-08-27T10:30:00+0800'
+  last_verified: '2026-08-27T10:30:00+0800'
+  created_at: '2026-08-27T09:56:34+0800'
+  track: hotfix
+  stage: H2
+  status: active
+  repos: [numind-server, numind-web-v3]
+  branches: {numind-server: fix/session-history-pagination, numind-web-v3: fix/session-history-pagination}
+  worktrees: {numind-server: /private/tmp/wt-session-history-pagination-numind-server, numind-web-v3: /private/tmp/wt-session-history-pagination-numind-web-v3}
+  progress: {total_tasks: 2, completed_tasks: 2, reviewed_tasks: 2, current_task: 'H2 verified; ready for H3 atomic merge and Dev deployment authorization.'}
+  artifacts:
+    h1_h2_verification: .ndf/decisions/session-history-pagination/0001-h1-h2-verification.md
+  decisions:
+  - 'Initial load is the newest 100 agent runs, rendered oldest-to-newest within that page.'
+  - 'Scrolling upward automatically fetches and prepends older pages without moving the reader viewport.'
+  - 'The ordered query selects fixed-width IDs first and hydrates complete runs second; messages are never truncated and MySQL sort_buffer_size is unchanged.'
+  - 'The first commit in each repository is a failing customer regression test, as required by the Bug-from-Customer rule.'
+  - 'H2 browser verification passed: initial offset 0, upward-scroll offset 100, 100 older messages prepended, viewport anchor drift no more than 2px, repeated 5 times plus one trace-enabled pass.'
+  - 'The successful browser trace has no console errors. The local shell smoke had an expected credits API 500 because no backend was attached; it is outside the routed pagination scenario.'
+  - 'Server targeted tests and lint pass. Full go test retains one unrelated Feishu timeout-classification failure that reproduces on untouched develop.'
+  blockers: []
 - id: bookmark-preserve-downstream
   ndf_version: '3.0'
   description: Preserve downstream SOP bookmarks, execution records, notes, and chat messages when an earlier step is unbookmarked or regenerated.
