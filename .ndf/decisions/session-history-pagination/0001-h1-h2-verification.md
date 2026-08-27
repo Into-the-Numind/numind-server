@@ -47,3 +47,13 @@ This Hotfix repairs only conversation snapshot loading and older-history paginat
 - TCR rejected the image push because `youshunumind/numind-server` has reached the personal-edition limit of 100 tags.
 - The registry contains 66 rebuildable `develop-<sha>` tags, but the configured registry credentials do not have tag-delete authority. A delete-token request and a single exact-tag probe were denied; no tags were deleted.
 - No Dev container was replaced. The frontend was intentionally not deployed alone, avoiding a mismatched Dev pair.
+
+## H3 Dev retry and verification
+
+- Before retry, the server registry inventory had been reduced from 100 to 47 tags, so the previous quota blocker was cleared.
+- Backend image `develop-c8bb1c8e` pushed with digest `sha256:1f36695a3bfba786be6556b891f849c948115d0a1eb6fb6edeaa8a3760bdcc97` and the Dev server container became healthy.
+- Frontend image `develop-8d295c5` pushed with digest `sha256:0d368e371d449844345629c542d3c839a47ae9e484317993cade615d1ece63b8` and the Dev web container became healthy.
+- External `/healthz`, web `/health`, and web root checks passed.
+- Authenticated browser smoke passed: login, homepage, and all visible homepage API requests returned 200 with no console errors; measured page load was 1.244 seconds.
+- The Dev run-history page loaded 81 task records and its status requests returned 200 without page or console errors.
+- Production was not deployed. Human Dev acceptance remains required before any production release.

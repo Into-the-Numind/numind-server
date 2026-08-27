@@ -4,9 +4,9 @@ features:
   ndf_version: '3.0'
   description: 'Load Agent session history in 100-run pages without sorting large message JSON, then fetch older pages when the user scrolls upward.'
   classification_reason: 'User-approved Hotfix override: extends the existing snapshot endpoint only; no schema, new endpoint, external integration, payment, or permission change.'
-  last_updated_by: ai-h3-merge-dev-blocked
-  last_updated_at: '2026-08-27T10:38:00+0800'
-  last_verified: '2026-08-27T10:30:00+0800'
+  last_updated_by: ai-h3-dev-deployed
+  last_updated_at: '2026-08-27T11:48:04+0800'
+  last_verified: '2026-08-27T11:48:04+0800'
   created_at: '2026-08-27T09:56:34+0800'
   track: hotfix
   stage: H3
@@ -14,7 +14,8 @@ features:
   repos: [numind-server, numind-web-v3]
   branches: {numind-server: develop, numind-web-v3: develop}
   worktrees: {numind-server: removed by ndf-done, numind-web-v3: removed by ndf-done}
-  progress: {total_tasks: 2, completed_tasks: 2, reviewed_tasks: 2, current_task: 'Merged and pushed. Dev deployment blocked by the 100-tag TCR personal-edition quota; frontend intentionally not deployed alone.'}
+  progress: {total_tasks: 2, completed_tasks: 2, reviewed_tasks: 2, current_task: 'Backend and frontend are deployed and healthy on Dev. Awaiting human quick acceptance before any production release.'}
+  deployed: 'dev server develop-c8bb1c8e (registry digest sha256:1f36695a3bfba786be6556b891f849c948115d0a1eb6fb6edeaa8a3760bdcc97); dev web develop-8d295c5 (registry digest sha256:0d368e371d449844345629c542d3c839a47ae9e484317993cade615d1ece63b8); both containers healthy, external health checks pass, authenticated browser smoke and run-history read pass'
   artifacts:
     h1_h2_verification: .ndf/decisions/session-history-pagination/0001-h1-h2-verification.md
   decisions:
@@ -28,8 +29,9 @@ features:
   - 'H3: ndf-done merged and pushed numind-server at 5d1db3b5 and numind-web-v3 at 8d295c5; both feature worktrees and local branches were removed.'
   - 'H3 Dev attempt: server image built successfully, but TCR rejected the push because youshunumind/numind-server is at its 100-tag cap. No Dev container was replaced and the frontend was not deployed alone.'
   - 'Registry inventory found 66 rebuildable develop-<sha> tags. Existing credentials can list and push but cannot delete tags; official delete-token and one exact safe-tag delete probe were both denied, and no tags were removed.'
-  blockers:
-  - 'Dev deployment requires deleting old develop-<sha> tags using Tencent Cloud TCR tag-delete authority, or configuring API credentials with DeleteImagePersonal permission.'
+  - 'H3 Dev retry: registry inventory was reduced to 47 tags before deployment; server and frontend images pushed successfully and both Dev containers became healthy.'
+  - 'Authenticated browser smoke passed: login and homepage APIs returned 200, the run-history page loaded 81 tasks and status requests without console errors, and initial page load was 1.244 seconds.'
+  blockers: []
 - id: bookmark-preserve-downstream
   ndf_version: '3.0'
   description: Preserve downstream SOP bookmarks, execution records, notes, and chat messages when an earlier step is unbookmarked or regenerated.
