@@ -56,4 +56,13 @@ This Hotfix repairs only conversation snapshot loading and older-history paginat
 - External `/healthz`, web `/health`, and web root checks passed.
 - Authenticated browser smoke passed: login, homepage, and all visible homepage API requests returned 200 with no console errors; measured page load was 1.244 seconds.
 - The Dev run-history page loaded 81 task records and its status requests returned 200 without page or console errors.
-- Production was not deployed. Human Dev acceptance remains required before any production release.
+
+## H3 Production deployment
+
+- The user accepted the 150-run Dev fixture and explicitly authorized a pagination-only production release.
+- Backend `v2.1.80` was built from the production `v2.1.79` baseline plus only the three pagination commits. Its exact diff contains five pagination files and excludes the unrelated SOP bookmark/regeneration hotfix on `develop`.
+- Backend image `v2.1.80-bf6251e6` deployed with registry digest `sha256:f4721e1f339033cd43be9beac83a95e03f36feb12f4614b102f2be0b638b8f68`.
+- Frontend image `v1.0.45-1848f9b` deployed with registry digest `sha256:3c5a52cfce173ffdcbe4ed32fe659c7247252fbfa08cf0f6464860af71ae15d6`.
+- Both containers are healthy; public root and `/api/healthz` returned HTTP 200.
+- An authenticated production browser opened existing session `1785642693464-3k6uqdrs`. The snapshot returned HTTP 200 with `offset=0`, `total_runs=1`, and `has_more=false`; the conversation rendered with no console errors.
+- No production data, Agent run, credit, or Feishu action was created during verification.

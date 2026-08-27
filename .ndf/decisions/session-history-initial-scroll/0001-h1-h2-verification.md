@@ -25,3 +25,10 @@ The browser initially renders a scroll container at `scrollTop=0`; smooth initia
 - Before any user scroll, the authenticated 150-run fixture makes only the default snapshot request, renders exactly Run 051-150, and sits at `distanceFromBottom=0` with Run 149-150 visible.
 - On upward scroll, it requests `offset=100&limit=100`, renders Run 001-150, and retains Run 051 with `0px` anchor drift.
 - Browser console errors: none.
+
+## H3 Production deployment
+
+- After the user accepted the 150-run Dev fixture, frontend tag `v1.0.45` deployed image `v1.0.45-1848f9b` with registry digest `sha256:3c5a52cfce173ffdcbe4ed32fe659c7247252fbfa08cf0f6464860af71ae15d6`.
+- The production container and public endpoints are healthy.
+- Authenticated browser smoke opened an existing Agent session, rendered its stored conversation, and reported no console errors.
+- Production has no known session above 100 runs, so the 150-run upward-scroll acceptance remains the Dev fixture evidence; no production fixture or Agent run was created.

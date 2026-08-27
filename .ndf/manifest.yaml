@@ -4,18 +4,19 @@ features:
   ndf_version: '3.0'
   description: 'Prevent initial Agent history restoration from being mistaken for an upward scroll and auto-loading older pages.'
   classification_reason: 'Same-scope Hotfix follow-up: frontend-only scroll sequencing in one component plus one browser regression test; no schema, API, external integration, payment, or permission change.'
-  last_updated_by: ai-h3-dev-deployed
-  last_updated_at: '2026-08-27T12:49:49+0800'
-  last_verified: '2026-08-27T12:49:49+0800'
+  last_updated_by: ai-h3-prod-deployed
+  last_updated_at: '2026-08-27T18:43:21+0800'
+  last_verified: '2026-08-27T18:43:21+0800'
   created_at: '2026-08-27T12:35:46+0800'
   track: hotfix
-  stage: H3
-  status: active
+  stage: completed
+  status: completed
+  completed_at: '2026-08-27T18:43:21+0800'
   repos: [numind-web-v3]
   branches: {numind-web-v3: develop}
   worktrees: {numind-web-v3: removed by ndf-done}
-  progress: {total_tasks: 2, completed_tasks: 2, reviewed_tasks: 2, current_task: 'Merged, deployed, and browser-verified on Dev. Awaiting human quick acceptance before any production release.'}
-  deployed: 'dev web develop-1848f9b (registry digest sha256:842475d8ca7f1fe5cfde9f5d2aa8d78ef87432fc1a4bdb70d30e76ec1771609d); container and external health checks pass'
+  progress: {total_tasks: 2, completed_tasks: 2, reviewed_tasks: 2, current_task: 'Production v1.0.45-1848f9b deployed healthy; authenticated Agent session browser smoke passed.'}
+  deployed: 'dev web develop-1848f9b (registry digest sha256:842475d8ca7f1fe5cfde9f5d2aa8d78ef87432fc1a4bdb70d30e76ec1771609d); prod web v1.0.45-1848f9b (registry digest sha256:3c5a52cfce173ffdcbe4ed32fe659c7247252fbfa08cf0f6464860af71ae15d6); container, public health, authenticated login, and existing Agent session load pass'
   artifacts:
     h1_h2_verification: .ndf/decisions/session-history-initial-scroll/0001-h1-h2-verification.md
   decisions:
@@ -23,22 +24,24 @@ features:
   - 'The first branch commit is the failing customer regression test; the implementation is a separate second commit.'
   - 'H3 Dev browser verification: initial DOM contains exactly Run 051-150 and is at distanceFromBottom 0; no offset 100 request occurs before user scroll.'
   - 'After upward scroll, offset 100 loads Run 001-050 and preserves the Run 051 anchor with 0px drift; browser console has no errors.'
+  - 'H3 Prod: after explicit user acceptance of the 150-run Dev fixture, frontend tag v1.0.45 deployed image v1.0.45-1848f9b and passed public health plus authenticated existing-session browser smoke with no console errors.'
 - id: session-history-pagination
   ndf_version: '3.0'
   description: 'Load Agent session history in 100-run pages without sorting large message JSON, then fetch older pages when the user scrolls upward.'
   classification_reason: 'User-approved Hotfix override: extends the existing snapshot endpoint only; no schema, new endpoint, external integration, payment, or permission change.'
-  last_updated_by: ai-h3-dev-deployed
-  last_updated_at: '2026-08-27T11:48:04+0800'
-  last_verified: '2026-08-27T11:48:04+0800'
+  last_updated_by: ai-h3-prod-deployed
+  last_updated_at: '2026-08-27T18:43:21+0800'
+  last_verified: '2026-08-27T18:43:21+0800'
   created_at: '2026-08-27T09:56:34+0800'
   track: hotfix
-  stage: H3
-  status: active
+  stage: completed
+  status: completed
+  completed_at: '2026-08-27T18:43:21+0800'
   repos: [numind-server, numind-web-v3]
   branches: {numind-server: develop, numind-web-v3: develop}
   worktrees: {numind-server: removed by ndf-done, numind-web-v3: removed by ndf-done}
-  progress: {total_tasks: 2, completed_tasks: 2, reviewed_tasks: 2, current_task: 'Backend and frontend are deployed and healthy on Dev. Awaiting human quick acceptance before any production release.'}
-  deployed: 'dev server develop-c8bb1c8e (registry digest sha256:1f36695a3bfba786be6556b891f849c948115d0a1eb6fb6edeaa8a3760bdcc97); dev web develop-8d295c5 (registry digest sha256:0d368e371d449844345629c542d3c839a47ae9e484317993cade615d1ece63b8); both containers healthy, external health checks pass, authenticated browser smoke and run-history read pass'
+  progress: {total_tasks: 2, completed_tasks: 2, reviewed_tasks: 2, current_task: 'Production backend v2.1.80-bf6251e6 and frontend v1.0.45-1848f9b deployed healthy; authenticated Agent session load passed.'}
+  deployed: 'dev server develop-c8bb1c8e (registry digest sha256:1f36695a3bfba786be6556b891f849c948115d0a1eb6fb6edeaa8a3760bdcc97); dev web develop-1848f9b (registry digest sha256:842475d8ca7f1fe5cfde9f5d2aa8d78ef87432fc1a4bdb70d30e76ec1771609d); prod server v2.1.80-bf6251e6 (registry digest sha256:f4721e1f339033cd43be9beac83a95e03f36feb12f4614b102f2be0b638b8f68); prod web v1.0.45-1848f9b (registry digest sha256:3c5a52cfce173ffdcbe4ed32fe659c7247252fbfa08cf0f6464860af71ae15d6); container and public health pass; authenticated existing Agent session snapshot returns 200 and renders without console errors'
   artifacts:
     h1_h2_verification: .ndf/decisions/session-history-pagination/0001-h1-h2-verification.md
   decisions:
@@ -54,6 +57,8 @@ features:
   - 'Registry inventory found 66 rebuildable develop-<sha> tags. Existing credentials can list and push but cannot delete tags; official delete-token and one exact safe-tag delete probe were both denied, and no tags were removed.'
   - 'H3 Dev retry: registry inventory was reduced to 47 tags before deployment; server and frontend images pushed successfully and both Dev containers became healthy.'
   - 'Authenticated browser smoke passed: login and homepage APIs returned 200, the run-history page loaded 81 tasks and status requests without console errors, and initial page load was 1.244 seconds.'
+  - 'H3 Prod: backend release was isolated from production v2.1.79 and contains only the five pagination files; unrelated later develop hotfixes were excluded. Tag v2.1.80 points to bf6251e6.'
+  - 'H3 Prod: backend v2.1.80-bf6251e6 and frontend v1.0.45-1848f9b deployed healthy. Public root and /api/healthz returned 200; an authenticated historical Agent session loaded snapshot HTTP 200, rendered its messages, and produced no console errors.'
   blockers: []
 - id: bookmark-preserve-downstream
   ndf_version: '3.0'
